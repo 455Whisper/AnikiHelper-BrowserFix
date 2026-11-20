@@ -3677,12 +3677,15 @@ namespace AnikiHelper.Services.WebBrowser
                 var deltaX = CalculateCursorDelta(normalizedX);
                 var deltaY = CalculateCursorDelta(normalizedY);
 
+                // Custom: the stick only sets a target speed here; a dedicated high-rate
+                // thread moves the cursor smoothly (sub-pixel, time-based, unaccelerated).
+                moverStickX = normalizedX;
+                moverStickY = normalizedY;
                 if (deltaX != 0 || deltaY != 0)
                 {
-                    // Reuse the exact relative SendInput path used by Aniki Helper's global
-                    // gamepad mouse. It remains reliable while WebView2 owns keyboard focus.
                     EnsureVisibleCursor();
-                    SendMouseInput(deltaX, deltaY, 0, MouseEventMove);
+                    EnsureCursorMover();
+                    moverWake.Set();
                 }
 
                 if (ignoreClickUntilReleased)
@@ -3795,6 +3798,8 @@ namespace AnikiHelper.Services.WebBrowser
 
         public void SuspendInput()
         {
+            moverStickX = 0;
+            moverStickY = 0;
             lock (stateLock)
             {
                 if (!sessionActive)
@@ -3817,6 +3822,7 @@ namespace AnikiHelper.Services.WebBrowser
 
         public void EndSession()
         {
+            StopCursorMover();
             lock (stateLock)
             {
                 ReleaseLeftButton();
@@ -3867,6 +3873,182 @@ namespace AnikiHelper.Services.WebBrowser
             var normalized = (absolute - AxisDeadZone) / (32767.0 - AxisDeadZone);
             normalized = Math.Max(0, Math.Min(1, normalized));
             return value < 0 ? -normalized : normalized;
+        }
+
+        // ---- Custom: high-rate cursor mover ----
+        private const double CursorFramesPerSecond = 60.0;
+        private volatile bool moverRunning;
+        private double moverStickXValue;
+        private double moverStickYValue;
+        private Thread moverThread;
+        private readonly AutoResetEvent moverWake = new AutoResetEvent(false);
+        private readonly Input[] moverInputBuffer = new Input[1];
+
+        private double moverStickX
+        {
+            get { return Volatile.Read(ref moverStickXValue); }
+            set { Volatile.Write(ref moverStickXValue, value); }
+        }
+
+        private double moverStickY
+        {
+            get { return Volatile.Read(ref moverStickYValue); }
+            set { Volatile.Write(ref moverStickYValue, value); }
+        }
+
+        [StructLayout(LayoutKind.Sequential)]
+        private struct MoverPoint
+        {
+            public int X;
+            public int Y;
+        }
+
+        [DllImport("user32.dll", EntryPoint = "GetCursorPos")]
+        private static extern bool MoverGetCursorPos(out MoverPoint point);
+
+        [DllImport("user32.dll", EntryPoint = "GetSystemMetrics")]
+        private static extern int MoverGetSystemMetrics(int index);
+
+        [DllImport("winmm.dll", EntryPoint = "timeBeginPeriod")]
+        private static extern uint MoverTimeBeginPeriod(uint period);
+
+        [DllImport("winmm.dll", EntryPoint = "timeEndPeriod")]
+        private static extern uint MoverTimeEndPeriod(uint period);
+
+        private void EnsureCursorMover()
+        {
+            if (moverRunning)
+            {
+                return;
+            }
+
+            moverRunning = true;
+            moverThread = new Thread(CursorMoverLoop)
+            {
+                IsBackground = true,
+                Priority = ThreadPriority.AboveNormal,
+                Name = "AnikiBrowserCursorMover"
+            };
+            moverThread.Start();
+        }
+
+        private void StopCursorMover()
+        {
+            moverRunning = false;
+            moverStickX = 0;
+            moverStickY = 0;
+            try { moverWake.Set(); } catch { }
+        }
+
+        private static double CursorSpeedPerSecond(double normalized)
+        {
+            if (Math.Abs(normalized) < double.Epsilon)
+            {
+                return 0;
+            }
+
+            var magnitude = Math.Abs(normalized);
+            var perFrame = 1.0 + ((MaximumCursorPixelsPerFrame - 1.0) * Math.Pow(magnitude, 1.7));
+            return (normalized < 0 ? -perFrame : perFrame) * CursorFramesPerSecond;
+        }
+
+        private void CursorMoverLoop()
+        {
+            var clock = System.Diagnostics.Stopwatch.StartNew();
+            var last = clock.Elapsed.TotalSeconds;
+            double remX = 0, remY = 0;
+            var timerRaised = false;
+
+            try
+            {
+                while (moverRunning)
+                {
+                    var sx = moverStickX;
+                    var sy = moverStickY;
+                    if (sx == 0 && sy == 0)
+                    {
+                        remX = 0;
+                        remY = 0;
+                        if (timerRaised)
+                        {
+                            MoverTimeEndPeriod(1);
+                            timerRaised = false;
+                        }
+
+                        moverWake.WaitOne(250);
+                        last = clock.Elapsed.TotalSeconds;
+                        continue;
+                    }
+
+                    if (!timerRaised)
+                    {
+                        MoverTimeBeginPeriod(1);
+                        timerRaised = true;
+                    }
+
+                    var now = clock.Elapsed.TotalSeconds;
+                    var dt = Math.Min(0.05, Math.Max(0, now - last));
+                    last = now;
+
+                    remX += CursorSpeedPerSecond(sx) * dt;
+                    remY += CursorSpeedPerSecond(sy) * dt;
+                    var moveX = (int)Math.Truncate(remX);
+                    var moveY = (int)Math.Truncate(remY);
+                    if (moveX != 0 || moveY != 0)
+                    {
+                        remX -= moveX;
+                        remY -= moveY;
+                        MoveCursorAbsoluteBy(moveX, moveY);
+                    }
+
+                    Thread.Sleep(4);
+                }
+            }
+            catch (Exception ex)
+            {
+                global::AnikiHelper.AnikiLog.Debug(logger, ex, "[AnikiHelper][WebBrowser] Cursor mover stopped.");
+            }
+            finally
+            {
+                if (timerRaised)
+                {
+                    MoverTimeEndPeriod(1);
+                }
+
+                moverRunning = false;
+            }
+        }
+
+        private void MoveCursorAbsoluteBy(int dx, int dy)
+        {
+            MoverPoint point;
+            if (!MoverGetCursorPos(out point))
+            {
+                return;
+            }
+
+            var vx = MoverGetSystemMetrics(76);
+            var vy = MoverGetSystemMetrics(77);
+            var vw = Math.Max(2, MoverGetSystemMetrics(78));
+            var vh = Math.Max(2, MoverGetSystemMetrics(79));
+            var x = Math.Max(vx, Math.Min(vx + vw - 1, point.X + dx));
+            var y = Math.Max(vy, Math.Min(vy + vh - 1, point.Y + dy));
+
+            moverInputBuffer[0] = new Input
+            {
+                Type = InputMouse,
+                MouseInput = new MouseInput
+                {
+                    Dx = (int)Math.Round((x - vx) * 65535.0 / (vw - 1)),
+                    Dy = (int)Math.Round((y - vy) * 65535.0 / (vh - 1)),
+                    MouseData = 0,
+                    Flags = MouseEventMove | 0x8000u | 0x4000u, // ABSOLUTE | VIRTUALDESK
+                    Time = 0,
+                    ExtraInfo = UIntPtr.Zero
+                }
+            };
+
+            try { SendInput(1, moverInputBuffer, Marshal.SizeOf(typeof(Input))); } catch { }
         }
 
         private static int CalculateCursorDelta(double normalized)
@@ -4277,6 +4459,7 @@ namespace AnikiHelper.Services.WebBrowser
 
         public void Dispose()
         {
+            StopCursorMover();
             EndSession();
         }
 
