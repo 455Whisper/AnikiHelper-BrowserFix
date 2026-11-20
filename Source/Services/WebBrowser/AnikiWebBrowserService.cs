@@ -3170,6 +3170,9 @@ namespace AnikiHelper.Services.WebBrowser
 
         private double GetEdgeScrollDirection()
         {
+            // Custom: edge auto-scroll (cursor near top/bottom of screen) disabled.
+            return 0;
+
             if (!hasPointerBounds || edgeScrollZonePixels <= 0)
             {
                 return 0;
