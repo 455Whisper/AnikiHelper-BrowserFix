@@ -976,7 +976,7 @@ namespace AnikiHelper.Services.WebBrowser
 
             footerContainer = CreateFooter();
             Grid.SetRow(footerContainer, 1);
-            root.Children.Add(footerContainer);
+            footerContainer.Visibility = Visibility.Collapsed; // Custom: footer never added to the window
 
             host.Content = root;
 
