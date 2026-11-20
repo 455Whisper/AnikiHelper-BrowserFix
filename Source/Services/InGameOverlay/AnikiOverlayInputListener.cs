@@ -483,7 +483,11 @@ namespace AnikiHelper.Services.InGameOverlay
                         RightY = analog.RightY,
                         LeftClick = IsHeld(ControllerInput.A),
                         LeftStickHeld = IsHeld(ControllerInput.LeftStick),
-                        RightStickHeld = IsHeld(ControllerInput.RightStick)
+                        RightStickHeld = IsHeld(ControllerInput.RightStick),
+                        IsFullPadState = true,
+                        ButtonMask = BuildStandardButtonMask(),
+                        LeftTrigger = analog.LeftTrigger,
+                        RightTrigger = analog.RightTrigger
                     });
                     return;
                 }
@@ -672,6 +676,28 @@ namespace AnikiHelper.Services.InGameOverlay
         private static bool IsSdlButtonPressed(IntPtr controller, int button)
         {
             return SDL_GameControllerGetButton(controller, button) != 0;
+        }
+
+        // Custom: W3C "standard" gamepad button bits for the browser's virtual pad.
+        private int BuildStandardButtonMask()
+        {
+            var m = 0;
+            if (IsHeld(ControllerInput.A)) m |= 1 << 0;
+            if (IsHeld(ControllerInput.B)) m |= 1 << 1;
+            if (IsHeld(ControllerInput.X)) m |= 1 << 2;
+            if (IsHeld(ControllerInput.Y)) m |= 1 << 3;
+            if (IsHeld(ControllerInput.LeftShoulder)) m |= 1 << 4;
+            if (IsHeld(ControllerInput.RightShoulder)) m |= 1 << 5;
+            if (IsHeld(ControllerInput.Back)) m |= 1 << 8;
+            if (IsHeld(ControllerInput.Start)) m |= 1 << 9;
+            if (IsHeld(ControllerInput.LeftStick)) m |= 1 << 10;
+            if (IsHeld(ControllerInput.RightStick)) m |= 1 << 11;
+            if (IsHeld(ControllerInput.DPadUp)) m |= 1 << 12;
+            if (IsHeld(ControllerInput.DPadDown)) m |= 1 << 13;
+            if (IsHeld(ControllerInput.DPadLeft)) m |= 1 << 14;
+            if (IsHeld(ControllerInput.DPadRight)) m |= 1 << 15;
+            if (IsHeld(ControllerInput.Guide)) m |= 1 << 16;
+            return m;
         }
 
         private AnalogState ReadAnalogState()

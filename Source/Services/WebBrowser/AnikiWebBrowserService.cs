@@ -39,6 +39,10 @@ namespace AnikiHelper.Services.WebBrowser
         public bool DPadRightPressed;
         public bool LeftStickHeld;
         public bool RightStickHeld;
+        public bool IsFullPadState;
+        public int ButtonMask;
+        public short LeftTrigger;
+        public short RightTrigger;
     }
 
     internal enum AnikiWebBrowserViewMode
@@ -83,10 +87,50 @@ namespace AnikiHelper.Services.WebBrowser
     // game controller mode (toggled from the host with L3+R3).
     window.__anikiPadPass = window.__anikiPadPass === true;
     const realGetGamepads = navigator.getGamepads ? navigator.getGamepads.bind(navigator) : (() => []);
+    // Virtual Xbox pad fed by the host (Aniki reads the controller and posts its state).
+    let vpad = null;
+    const mkBtn = (p, v) => ({ pressed: p, touched: p, value: v });
+    const announce = () => {
+        try {
+            const ev = new Event('gamepadconnected');
+            Object.defineProperty(ev, 'gamepad', { value: vpad });
+            window.dispatchEvent(ev);
+        } catch (_) { }
+    };
+    try {
+        window.chrome.webview.addEventListener('message', e => {
+            const d = e.data;
+            if (typeof d !== 'string' || d.indexOf('aniki-pad:') !== 0) { return; }
+            const v = d.slice(10).split(',').map(Number);
+            const m = v[0];
+            const buttons = [];
+            for (let i = 0; i < 17; i++) {
+                if (i === 6) { buttons.push(mkBtn(v[5] > 0.12, v[5])); continue; }
+                if (i === 7) { buttons.push(mkBtn(v[6] > 0.12, v[6])); continue; }
+                const p = ((m >> i) & 1) === 1;
+                buttons.push(mkBtn(p, p ? 1 : 0));
+            }
+            const first = !vpad;
+            vpad = {
+                id: 'Xbox 360 Controller (XInput STANDARD GAMEPAD)',
+                index: 0,
+                connected: true,
+                mapping: 'standard',
+                timestamp: performance.now(),
+                axes: [v[1], v[2], v[3], v[4]],
+                buttons: buttons,
+                vibrationActuator: null,
+                hapticActuators: []
+            };
+            if (first && window.__anikiPadPass) { announce(); }
+        });
+    } catch (_) { }
     try {
         Object.defineProperty(navigator, 'getGamepads', {
             configurable: true,
-            value: () => window.__anikiPadPass ? realGetGamepads() : []
+            value: () => window.__anikiPadPass
+                ? (vpad ? [vpad, null, null, null] : realGetGamepads())
+                : []
         });
     } catch (_) { }
 
@@ -100,6 +144,7 @@ namespace AnikiHelper.Services.WebBrowser
 
     window.__anikiSetPadPass = on => {
         window.__anikiPadPass = !!on;
+        if (!on) { vpad = null; }
         if (on) {
             try {
                 for (const pad of realGetGamepads()) {
@@ -329,6 +374,14 @@ namespace AnikiHelper.Services.WebBrowser
                 return;
             }
 
+            // Custom: quick L3+R3 tap toggles game controller mode (hold still opens the keyboard).
+            HandleGameModeChord(state);
+            if (gamepadPassthrough)
+            {
+                ForwardVirtualPadState(state);
+                return;
+            }
+
             // First controller input restores browser focus; close still works as a failsafe.
             if (!browserWindowActive)
             {
@@ -348,13 +401,6 @@ namespace AnikiHelper.Services.WebBrowser
                     QueueControllerFocusRecovery();
                 }
 
-                return;
-            }
-
-            // Custom: quick L3+R3 tap toggles game controller mode (hold still opens the keyboard).
-            HandleGameModeChord(state);
-            if (gamepadPassthrough)
-            {
                 return;
             }
 
@@ -3001,7 +3047,7 @@ namespace AnikiHelper.Services.WebBrowser
         }
 
         // ---- Custom: game controller mode (gamepad passthrough for browser games) ----
-        private const int GameModeTapMaxMs = 550;
+        private const int GameModeTapMaxMs = 590;
         private volatile bool gamepadPassthrough;
         private bool stickChordActive;
         private DateTime stickChordStartUtc;
@@ -3027,6 +3073,49 @@ namespace AnikiHelper.Services.WebBrowser
                     InvokeOnUi(ToggleGameModeCore);
                 }
             }
+        }
+
+        private string lastPadMessage;
+        private DateTime lastPadMessageUtc = DateTime.MinValue;
+
+        private void ForwardVirtualPadState(WebBrowserGamepadInputState state)
+        {
+            if (!state.IsFullPadState)
+            {
+                return;
+            }
+
+            var ci = System.Globalization.CultureInfo.InvariantCulture;
+            Func<short, string> axis = v => (Math.Max(-1.0, v / 32767.0)).ToString("0.###", ci);
+            Func<short, string> trig = v => (Math.Max(0.0, Math.Min(1.0, v / 32767.0))).ToString("0.###", ci);
+            var message = "aniki-pad:" + state.ButtonMask + "," +
+                          axis(state.LeftX) + "," + axis(state.LeftY) + "," +
+                          axis(state.RightX) + "," + axis(state.RightY) + "," +
+                          trig(state.LeftTrigger) + "," + trig(state.RightTrigger);
+
+            var now = DateTime.UtcNow;
+            if (message == lastPadMessage && (now - lastPadMessageUtc).TotalMilliseconds < 250)
+            {
+                return;
+            }
+
+            lastPadMessage = message;
+            lastPadMessageUtc = now;
+
+            InvokeOnUi(delegate
+            {
+                var core = webView?.CoreWebView2;
+                if (core == null || !gamepadPassthrough)
+                {
+                    return;
+                }
+
+                try { core.PostWebMessageAsString(message); } catch { }
+                foreach (var frame in trackedFrames.ToList())
+                {
+                    try { frame.PostWebMessageAsString(message); } catch { }
+                }
+            });
         }
 
         private void Core_FrameCreated(object sender, CoreWebView2FrameCreatedEventArgs e)
