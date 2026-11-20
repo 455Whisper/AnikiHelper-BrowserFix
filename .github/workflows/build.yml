@@ -1,0 +1,26 @@
+name: Build AnikiHelper
+
+on:
+  push:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: microsoft/setup-msbuild@v2
+
+      - uses: nuget/setup-nuget@v2
+
+      - name: Restore NuGet packages
+        run: nuget restore Source/packages.config -PackagesDirectory Source/packages
+
+      - name: Build (Release)
+        run: msbuild Source/AnikiHelper.csproj /p:Configuration=Release /p:Platform=AnyCPU /m
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: AnikiHelper-Release
+          path: Source/bin/Release/

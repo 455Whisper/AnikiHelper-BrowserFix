@@ -968,7 +968,7 @@ namespace AnikiHelper.Services.WebBrowser
                 Background = Brushes.Black
             };
             root.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
-            footerRow = new RowDefinition { Height = new GridLength(FooterHeight) };
+            footerRow = new RowDefinition { Height = new GridLength(0) };
             root.RowDefinitions.Add(footerRow);
 
             Grid.SetRow(mainArea, 0);
@@ -1147,6 +1147,9 @@ namespace AnikiHelper.Services.WebBrowser
             {
                 return;
             }
+
+            // Custom: footer legend permanently hidden so the page never resizes.
+            visible = false;
 
             footerContainer.Visibility = visible
                 ? Visibility.Visible
