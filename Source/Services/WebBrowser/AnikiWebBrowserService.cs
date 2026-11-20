@@ -3257,13 +3257,58 @@ namespace AnikiHelper.Services.WebBrowser
                     "BrowserCursors");
                 var arrow = Path.Combine(dir, "arrow.cur");
                 var hand = Path.Combine(dir, "hand.cur");
-                if (File.Exists(arrow)) { customArrowCursor = new Cursor(arrow); }
-                if (File.Exists(hand)) { customHandCursor = new Cursor(hand); }
+                if (File.Exists(arrow)) { customArrowCursor = LoadScaledCursor(arrow); }
+                if (File.Exists(hand)) { customHandCursor = LoadScaledCursor(hand); }
             }
             catch (Exception ex)
             {
                 logger?.Warn(ex, "[AnikiHelper][WebBrowser] Custom cursors could not be loaded.");
             }
+        }
+
+        private const double CustomCursorScale = 1.3;
+        private const uint ImageCursor = 2;
+        private const uint LoadFromFile = 0x0010;
+        private const int SystemMetricCursorWidth = 13;
+
+        [DllImport("user32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+        private static extern IntPtr LoadImage(IntPtr instance, string name, uint type, int width, int height, uint load);
+
+        [DllImport("user32.dll")]
+        private static extern int GetSystemMetrics(int index);
+
+        [DllImport("user32.dll")]
+        private static extern bool DestroyCursor(IntPtr cursor);
+
+        private sealed class OwnedCursorHandle : Microsoft.Win32.SafeHandles.SafeHandleZeroOrMinusOneIsInvalid
+        {
+            public OwnedCursorHandle(IntPtr handle) : base(true)
+            {
+                SetHandle(handle);
+            }
+
+            protected override bool ReleaseHandle()
+            {
+                return DestroyCursor(handle);
+            }
+        }
+
+        private static Cursor LoadScaledCursor(string path)
+        {
+            var baseSize = GetSystemMetrics(SystemMetricCursorWidth);
+            if (baseSize <= 0)
+            {
+                baseSize = 32;
+            }
+
+            var size = (int)Math.Round(baseSize * CustomCursorScale);
+            var handle = LoadImage(IntPtr.Zero, path, ImageCursor, size, size, LoadFromFile);
+            if (handle == IntPtr.Zero)
+            {
+                return new Cursor(path);
+            }
+
+            return System.Windows.Interop.CursorInteropHelper.Create(new OwnedCursorHandle(handle));
         }
 
         private void StartCursorManager()
