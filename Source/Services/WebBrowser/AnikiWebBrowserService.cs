@@ -109,8 +109,8 @@ namespace AnikiHelper.Services.WebBrowser
         } catch (_) { }
     };
 
-    ensureCursorStyle();
-    document.addEventListener('DOMContentLoaded', ensureCursorStyle, { once: true });
+    // Custom: page cursor styles are no longer overridden; the real cursor
+    // is reported to the host and drawn there.
 })();";
 
         private const string UserActivityScript = @"
@@ -140,6 +140,38 @@ namespace AnikiHelper.Services.WebBrowser
     window.addEventListener('scroll', notifyActivity, { capture: true, passive: true });
     window.addEventListener('keydown', notifyActivity, true);
     window.addEventListener('touchstart', notifyActivity, { capture: true, passive: true });
+
+    // Custom: report what cursor the page wants (pointer / text / default).
+    let lastCursor = '';
+    let pendingTarget = null;
+    let cursorFrame = 0;
+    const classify = el => {
+        try {
+            if (!(el instanceof Element)) { return 'default'; }
+            const c = getComputedStyle(el).cursor || '';
+            if (c.indexOf('pointer') >= 0) { return 'pointer'; }
+            if (c.indexOf('text') >= 0) { return 'text'; }
+            if (c === 'auto') {
+                if (el.closest('a[href], button, summary, select, label[for], [role=""button""], [role=""link""]')) { return 'pointer'; }
+                if (el.isContentEditable || el.matches('textarea, input:not([type=""button""]):not([type=""submit""]):not([type=""checkbox""]):not([type=""radio""]):not([type=""range""])')) { return 'text'; }
+            }
+        } catch (_) { }
+        return 'default';
+    };
+    const flushCursor = () => {
+        cursorFrame = 0;
+        const kind = classify(pendingTarget);
+        if (kind !== lastCursor) {
+            lastCursor = kind;
+            try { window.chrome.webview.postMessage('aniki-cursor:' + kind); } catch (_) { }
+        }
+    };
+    const queueCursor = e => {
+        pendingTarget = e.target;
+        if (!cursorFrame) { cursorFrame = requestAnimationFrame(flushCursor); }
+    };
+    window.addEventListener('pointerover', queueCursor, true);
+    window.addEventListener('pointermove', queueCursor, { capture: true, passive: true });
 })();";
 
         private readonly IPlayniteAPI api;
@@ -675,6 +707,8 @@ namespace AnikiHelper.Services.WebBrowser
             }
 
             viewMode = AnikiWebBrowserViewMode.Home;
+            pageCursorKind = "default";
+            ApplyBrowserCursor();
             // Home/favorites uses Aniki's own D-Pad/left-stick focus navigation. Disable
             // Playnite's native fullscreen controller navigation while this view owns focus,
             // otherwise one physical D-Pad press can move two favorite cards.
@@ -997,6 +1031,7 @@ namespace AnikiHelper.Services.WebBrowser
             windowHost = host;
             webView = view;
             closing = false;
+            StartCursorManager();
             browserWindowActive = false;
             pointerSessionActive = false;
             homePointerMode = false;
@@ -1722,12 +1757,18 @@ namespace AnikiHelper.Services.WebBrowser
 
             try
             {
+                var message = e.TryGetWebMessageAsString();
                 if (string.Equals(
-                    e.TryGetWebMessageAsString(),
+                    message,
                     "aniki-web-activity",
                     StringComparison.Ordinal))
                 {
                     RegisterFooterActivityCore();
+                }
+                else if (message != null && message.StartsWith("aniki-cursor:", StringComparison.Ordinal))
+                {
+                    pageCursorKind = message.Substring("aniki-cursor:".Length);
+                    ApplyBrowserCursor();
                 }
             }
             catch
@@ -1983,6 +2024,7 @@ namespace AnikiHelper.Services.WebBrowser
                 footerAutoHideTimer = null;
             }
 
+            StopCursorManager();
             pointerController.EndSession();
             ReleaseExclusiveControllerProcessing();
 
@@ -2866,6 +2908,145 @@ namespace AnikiHelper.Services.WebBrowser
             pointerController.Dispose();
         }
 
+        // ---- Custom: cursor manager (custom cursors, hand over links, hide when idle) ----
+        private const int CursorIdleHideMs = 5000;
+        private DispatcherTimer cursorIdleTimer;
+        private string pageCursorKind = "default";
+        private bool cursorIdleHidden;
+        private int lastCursorX = int.MinValue;
+        private int lastCursorY = int.MinValue;
+        private DateTime lastCursorMoveUtc = DateTime.UtcNow;
+        private static Cursor customArrowCursor;
+        private static Cursor customHandCursor;
+        private static bool customCursorsLoaded;
+
+        [StructLayout(LayoutKind.Sequential)]
+        private struct CursorPoint
+        {
+            public int X;
+            public int Y;
+        }
+
+        [DllImport("user32.dll", EntryPoint = "GetCursorPos")]
+        private static extern bool GetCursorPosForIdle(out CursorPoint point);
+
+        private void LoadCustomCursors()
+        {
+            if (customCursorsLoaded)
+            {
+                return;
+            }
+
+            customCursorsLoaded = true;
+            try
+            {
+                var dir = Path.Combine(
+                    Path.GetDirectoryName(typeof(AnikiWebBrowserService).Assembly.Location) ?? string.Empty,
+                    "Assets",
+                    "BrowserCursors");
+                var arrow = Path.Combine(dir, "arrow.cur");
+                var hand = Path.Combine(dir, "hand.cur");
+                if (File.Exists(arrow)) { customArrowCursor = new Cursor(arrow); }
+                if (File.Exists(hand)) { customHandCursor = new Cursor(hand); }
+            }
+            catch (Exception ex)
+            {
+                logger?.Warn(ex, "[AnikiHelper][WebBrowser] Custom cursors could not be loaded.");
+            }
+        }
+
+        private void StartCursorManager()
+        {
+            LoadCustomCursors();
+            StopCursorManager();
+            cursorIdleHidden = false;
+            pageCursorKind = "default";
+            lastCursorMoveUtc = DateTime.UtcNow;
+            lastCursorX = int.MinValue;
+            lastCursorY = int.MinValue;
+            cursorIdleTimer = new DispatcherTimer(DispatcherPriority.Input)
+            {
+                Interval = TimeSpan.FromMilliseconds(100)
+            };
+            cursorIdleTimer.Tick += CursorIdleTimer_Tick;
+            cursorIdleTimer.Start();
+            ApplyBrowserCursor();
+        }
+
+        private void StopCursorManager()
+        {
+            if (cursorIdleTimer != null)
+            {
+                cursorIdleTimer.Stop();
+                cursorIdleTimer.Tick -= CursorIdleTimer_Tick;
+                cursorIdleTimer = null;
+            }
+
+            cursorIdleHidden = false;
+        }
+
+        private void CursorIdleTimer_Tick(object sender, EventArgs e)
+        {
+            CursorPoint point;
+            if (!GetCursorPosForIdle(out point))
+            {
+                return;
+            }
+
+            var now = DateTime.UtcNow;
+            if (point.X != lastCursorX || point.Y != lastCursorY)
+            {
+                lastCursorX = point.X;
+                lastCursorY = point.Y;
+                lastCursorMoveUtc = now;
+                if (cursorIdleHidden)
+                {
+                    cursorIdleHidden = false;
+                    ApplyBrowserCursor();
+                }
+
+                return;
+            }
+
+            if (!cursorIdleHidden && (now - lastCursorMoveUtc).TotalMilliseconds >= CursorIdleHideMs)
+            {
+                cursorIdleHidden = true;
+                ApplyBrowserCursor();
+            }
+        }
+
+        private void ApplyBrowserCursor()
+        {
+            var host = windowHost;
+            if (host == null)
+            {
+                return;
+            }
+
+            Cursor target;
+            if (cursorIdleHidden)
+            {
+                target = Cursors.None;
+            }
+            else if (viewMode == AnikiWebBrowserViewMode.Web && pageCursorKind == "pointer")
+            {
+                target = customHandCursor ?? Cursors.Hand;
+            }
+            else if (viewMode == AnikiWebBrowserViewMode.Web && pageCursorKind == "text")
+            {
+                target = Cursors.IBeam;
+            }
+            else
+            {
+                target = customArrowCursor ?? Cursors.Arrow;
+            }
+
+            if (!ReferenceEquals(host.Cursor, target))
+            {
+                host.Cursor = target;
+            }
+        }
+
         private const byte VirtualKeyReturn = 0x0D;
         private const uint KeyEventKeyUp = 0x0002;
 
@@ -2886,6 +3067,9 @@ namespace AnikiHelper.Services.WebBrowser
         private const double MaximumCursorPixelsPerFrame = 22.0;
         private const double WheelUnitsPerFrame = 88.0;
         private const double EdgeScrollZoneDip = 72.0;
+        private const double StickScrollMaximumUnitsPerFrame = 80.0;
+        private const double StickScrollPressEasing = 0.2;
+        private const double StickScrollReleaseEasing = 0.12;
         private const double EdgeScrollMinimumUnitsPerFrame = 3.0;
         private const double EdgeScrollMaximumUnitsPerFrame = 20.0;
         private const double EdgeScrollVelocitySmoothing = 0.18;
@@ -3057,59 +3241,35 @@ namespace AnikiHelper.Services.WebBrowser
                     UpdateLeftButton(state.LeftClick);
                 }
 
-                // Invert SDL Y for Windows wheel direction; edge position handles auto-scroll.
+                // Custom: smooth left-stick scrolling. Instead of whole 120-unit wheel
+                // notches, send small high-resolution wheel deltas every frame with eased
+                // acceleration and a short glide when the stick is released.
+                wheelAccumulator = 0;
                 var stickScrollDirection = -NormalizeAxis(state.LeftY);
-
+                var targetVelocity = 0.0;
                 if (Math.Abs(stickScrollDirection) >= 0.01)
                 {
-                    // Keep the existing detented wheel behaviour for the left stick, which
-                    // is intentionally the fast/manual scrolling control.
+                    targetVelocity = Math.Sign(stickScrollDirection) *
+                                     Math.Pow(Math.Abs(stickScrollDirection), 1.6) *
+                                     StickScrollMaximumUnitsPerFrame;
+                }
+
+                var easing = targetVelocity == 0 ? StickScrollReleaseEasing : StickScrollPressEasing;
+                edgeScrollVelocity += (targetVelocity - edgeScrollVelocity) * easing;
+
+                if (targetVelocity == 0 && Math.Abs(edgeScrollVelocity) < 0.4)
+                {
                     edgeScrollVelocity = 0;
                     edgeWheelRemainder = 0;
-
-                    var curved = Math.Sign(stickScrollDirection) *
-                                 Math.Pow(Math.Abs(stickScrollDirection), 1.25);
-                    wheelAccumulator += curved * WheelUnitsPerFrame;
-
-                    if (Math.Abs(wheelAccumulator) >= WheelDelta)
-                    {
-                        var steps = (int)(wheelAccumulator / WheelDelta);
-                        var wheelData = steps * WheelDelta;
-                        wheelAccumulator -= wheelData;
-                        SendMouseInput(0, 0, wheelData, MouseEventWheel);
-                    }
                 }
                 else
                 {
-                    // Edge scrolling uses high-resolution wheel deltas every frame instead
-                    // of waiting for a full 120-unit wheel notch. That preserves the same
-                    // overall speed while removing the visible low-speed jolts.
-                    wheelAccumulator = 0;
-                    var edgeScrollDirection = GetEdgeScrollDirection();
-
-                    if (Math.Abs(edgeScrollDirection) < 0.01)
+                    edgeWheelRemainder += edgeScrollVelocity;
+                    var wheelData = (int)Math.Truncate(edgeWheelRemainder);
+                    if (wheelData != 0)
                     {
-                        edgeScrollVelocity = 0;
-                        edgeWheelRemainder = 0;
-                    }
-                    else
-                    {
-                        var edgeStrength = Math.Pow(Math.Abs(edgeScrollDirection), 1.35);
-                        var edgeUnits = EdgeScrollMinimumUnitsPerFrame +
-                                        ((EdgeScrollMaximumUnitsPerFrame -
-                                          EdgeScrollMinimumUnitsPerFrame) * edgeStrength);
-                        var targetVelocity = Math.Sign(edgeScrollDirection) * edgeUnits;
-
-                        edgeScrollVelocity +=
-                            (targetVelocity - edgeScrollVelocity) * EdgeScrollVelocitySmoothing;
-                        edgeWheelRemainder += edgeScrollVelocity;
-
-                        var wheelData = (int)Math.Truncate(edgeWheelRemainder);
-                        if (wheelData != 0)
-                        {
-                            edgeWheelRemainder -= wheelData;
-                            SendMouseInput(0, 0, wheelData, MouseEventWheel);
-                        }
+                        edgeWheelRemainder -= wheelData;
+                        SendMouseInput(0, 0, wheelData, MouseEventWheel);
                     }
                 }
             }
