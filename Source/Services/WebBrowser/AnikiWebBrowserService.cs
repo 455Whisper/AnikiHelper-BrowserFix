@@ -830,7 +830,7 @@ namespace AnikiHelper.Services.WebBrowser
                 localEnvironment = await CoreWebView2Environment.CreateAsync(
                     null,
                     userDataFolder,
-                    new CoreWebView2EnvironmentOptions());
+                    CreateCustomEnvironmentOptions());
 
                 if (!IsCurrentSession(generation, expectedHost, expectedView))
                 {
@@ -841,6 +841,7 @@ namespace AnikiHelper.Services.WebBrowser
             }
 
             await expectedView.EnsureCoreWebView2Async(localEnvironment);
+            await LoadCustomExtensionsAsync(expectedView.CoreWebView2);
 
             if (!IsCurrentSession(generation, expectedHost, expectedView))
             {
@@ -2188,7 +2189,7 @@ namespace AnikiHelper.Services.WebBrowser
                         localEnvironment = await CoreWebView2Environment.CreateAsync(
                             null,
                             userDataFolder,
-                            new CoreWebView2EnvironmentOptions());
+                            CreateCustomEnvironmentOptions());
                         environment = localEnvironment;
                     }
 
@@ -2595,6 +2596,68 @@ namespace AnikiHelper.Services.WebBrowser
             }
 
             return (bytes / mb).ToString("0.0") + " MB";
+        }
+
+        // Custom: browser extension support (e.g. Anime4K).
+        // Put each unpacked extension (a folder containing manifest.json) in
+        // ExtensionsData\<AnikiHelper id>\WebBrowser\Extensions\
+        private bool customExtensionsLoaded;
+
+        private static CoreWebView2EnvironmentOptions CreateCustomEnvironmentOptions()
+        {
+            var options = new CoreWebView2EnvironmentOptions();
+            options.AreBrowserExtensionsEnabled = true;
+            return options;
+        }
+
+        private string GetCustomExtensionsFolder()
+        {
+            var parent = Path.GetDirectoryName(userDataFolder.TrimEnd('\\', '/'));
+            return Path.Combine(parent ?? userDataFolder, "Extensions");
+        }
+
+        private async Task LoadCustomExtensionsAsync(CoreWebView2 core)
+        {
+            if (customExtensionsLoaded || core == null)
+            {
+                return;
+            }
+
+            customExtensionsLoaded = true;
+
+            try
+            {
+                var folder = GetCustomExtensionsFolder();
+                Directory.CreateDirectory(folder);
+
+                var installed = await core.Profile.GetBrowserExtensionsAsync();
+                foreach (var ext in installed)
+                {
+                    try { await ext.RemoveAsync(); } catch { }
+                }
+
+                foreach (var dir in Directory.GetDirectories(folder))
+                {
+                    if (!File.Exists(Path.Combine(dir, "manifest.json")))
+                    {
+                        continue;
+                    }
+
+                    try
+                    {
+                        var ext = await core.Profile.AddBrowserExtensionAsync(dir);
+                        logger.Info("[AnikiHelper][WebBrowser][Extensions] Loaded: " + ext.Name + " (" + dir + ")");
+                    }
+                    catch (Exception ex)
+                    {
+                        logger.Warn(ex, "[AnikiHelper][WebBrowser][Extensions] Failed to load: " + dir);
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                logger.Warn(ex, "[AnikiHelper][WebBrowser][Extensions] Extension loading failed.");
+            }
         }
 
         private static string ResolveUserDataFolder(IPlayniteAPI api, string requestedFolder)
