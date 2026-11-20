@@ -1334,6 +1334,7 @@ namespace AnikiHelper.Services.WebBrowser
                 throw new InvalidOperationException("WebView2 Core was not created.");
             }
 
+            try { core.MemoryUsageTargetLevel = CoreWebView2MemoryUsageTargetLevel.Normal; } catch { }
             core.Settings.AreBrowserAcceleratorKeysEnabled = false;
             core.Settings.AreDevToolsEnabled = false;
             core.Settings.IsStatusBarEnabled = false;
@@ -1795,6 +1796,7 @@ namespace AnikiHelper.Services.WebBrowser
 
         private void Core_NavigationCompleted(object sender, CoreWebView2NavigationCompletedEventArgs e)
         {
+            BoostBrowserProcessPriority();
             if (viewMode != AnikiWebBrowserViewMode.Web)
             {
                 return;
@@ -2645,10 +2647,65 @@ namespace AnikiHelper.Services.WebBrowser
         // ExtensionsData\<AnikiHelper id>\WebBrowser\Extensions\
         private bool customExtensionsLoaded;
 
+        // Custom: run the browser's processes (GPU, renderer, browser) above normal priority.
+        private void BoostBrowserProcessPriority()
+        {
+            var env = environment;
+            if (env == null)
+            {
+                return;
+            }
+
+            List<int> ids;
+            try
+            {
+                ids = env.GetProcessInfos().Select(x => x.ProcessId).ToList();
+            }
+            catch
+            {
+                return;
+            }
+
+            Task.Run(() =>
+            {
+                try
+                {
+                    foreach (var id in ids)
+                    {
+                        try
+                        {
+                            using (var process = System.Diagnostics.Process.GetProcessById(id))
+                            {
+                                if (process.PriorityClass == System.Diagnostics.ProcessPriorityClass.Normal)
+                                {
+                                    process.PriorityClass = System.Diagnostics.ProcessPriorityClass.AboveNormal;
+                                }
+                            }
+                        }
+                        catch
+                        {
+                        }
+                    }
+                }
+                catch
+                {
+                }
+            });
+        }
+
         private static CoreWebView2EnvironmentOptions CreateCustomEnvironmentOptions()
         {
             var options = new CoreWebView2EnvironmentOptions();
             options.AreBrowserExtensionsEnabled = true;
+            // Custom performance flags: never treat the (captured/off-screen) page as
+            // hidden or in the background, and let Chromium use the GPU fully.
+            options.AdditionalBrowserArguments =
+                "--disable-renderer-backgrounding " +
+                "--disable-backgrounding-occluded-windows " +
+                "--disable-background-timer-throttling " +
+                "--ignore-gpu-blocklist " +
+                "--enable-gpu-rasterization " +
+                "--enable-zero-copy";
             return options;
         }
 
