@@ -481,7 +481,9 @@ namespace AnikiHelper.Services.InGameOverlay
                         LeftY = analog.LeftY,
                         RightX = analog.RightX,
                         RightY = analog.RightY,
-                        LeftClick = IsHeld(ControllerInput.A)
+                        LeftClick = IsHeld(ControllerInput.A),
+                        LeftStickHeld = IsHeld(ControllerInput.LeftStick),
+                        RightStickHeld = IsHeld(ControllerInput.RightStick)
                     });
                     return;
                 }
@@ -1007,7 +1009,9 @@ namespace AnikiHelper.Services.InGameOverlay
                 DPadUpPressed = button == ControllerInput.DPadUp && transition.PressedNow,
                 DPadDownPressed = button == ControllerInput.DPadDown && transition.PressedNow,
                 DPadLeftPressed = button == ControllerInput.DPadLeft && transition.PressedNow,
-                DPadRightPressed = button == ControllerInput.DPadRight && transition.PressedNow
+                DPadRightPressed = button == ControllerInput.DPadRight && transition.PressedNow,
+                LeftStickHeld = IsHeld(ControllerInput.LeftStick),
+                RightStickHeld = IsHeld(ControllerInput.RightStick)
             });
         }
 

@@ -37,6 +37,8 @@ namespace AnikiHelper.Services.WebBrowser
         public bool DPadDownPressed;
         public bool DPadLeftPressed;
         public bool DPadRightPressed;
+        public bool LeftStickHeld;
+        public bool RightStickHeld;
     }
 
     internal enum AnikiWebBrowserViewMode
@@ -77,16 +79,35 @@ namespace AnikiHelper.Services.WebBrowser
 
         private const string ControllerCompatibilityScript = @"
 (() => {
+    // Custom: gamepad access is blocked in cursor mode and passed through in
+    // game controller mode (toggled from the host with L3+R3).
+    window.__anikiPadPass = window.__anikiPadPass === true;
+    const realGetGamepads = navigator.getGamepads ? navigator.getGamepads.bind(navigator) : (() => []);
     try {
         Object.defineProperty(navigator, 'getGamepads', {
             configurable: true,
-            value: () => []
+            value: () => window.__anikiPadPass ? realGetGamepads() : []
         });
     } catch (_) { }
 
-    window.addEventListener('gamepadconnected', event => {
-        try { event.stopImmediatePropagation(); } catch (_) { }
-    }, true);
+    const blockPadEvent = event => {
+        if (!window.__anikiPadPass) {
+            try { event.stopImmediatePropagation(); } catch (_) { }
+        }
+    };
+    window.addEventListener('gamepadconnected', blockPadEvent, true);
+    window.addEventListener('gamepaddisconnected', blockPadEvent, true);
+
+    window.__anikiSetPadPass = on => {
+        window.__anikiPadPass = !!on;
+        if (on) {
+            try {
+                for (const pad of realGetGamepads()) {
+                    if (pad) { window.dispatchEvent(new GamepadEvent('gamepadconnected', { gamepad: pad })); }
+                }
+            } catch (_) { }
+        }
+    };
 
     const styleId = 'aniki-controller-cursor-style';
     const ensureCursorStyle = () => {
@@ -327,6 +348,13 @@ namespace AnikiHelper.Services.WebBrowser
                     QueueControllerFocusRecovery();
                 }
 
+                return;
+            }
+
+            // Custom: quick L3+R3 tap toggles game controller mode (hold still opens the keyboard).
+            HandleGameModeChord(state);
+            if (gamepadPassthrough)
+            {
                 return;
             }
 
@@ -707,6 +735,7 @@ namespace AnikiHelper.Services.WebBrowser
             }
 
             viewMode = AnikiWebBrowserViewMode.Home;
+            ResetGameModeCore();
             pageCursorKind = "default";
             ApplyBrowserCursor();
             // Home/favorites uses Aniki's own D-Pad/left-stick focus navigation. Disable
@@ -1353,6 +1382,7 @@ namespace AnikiHelper.Services.WebBrowser
             core.ProcessFailed += Core_ProcessFailed;
             core.WindowCloseRequested += Core_WindowCloseRequested;
             core.WebMessageReceived += Core_WebMessageReceived;
+            core.FrameCreated += Core_FrameCreated;
         }
 
         private void UnconfigureCoreWebView(CoreWebView2 core)
@@ -2026,6 +2056,7 @@ namespace AnikiHelper.Services.WebBrowser
                 footerAutoHideTimer = null;
             }
 
+            ResetGameModeCore();
             StopCursorManager();
             pointerController.EndSession();
             ReleaseExclusiveControllerProcessing();
@@ -2963,6 +2994,136 @@ namespace AnikiHelper.Services.WebBrowser
             disposed = true;
             Close();
             pointerController.Dispose();
+        }
+
+        // ---- Custom: game controller mode (gamepad passthrough for browser games) ----
+        private const int GameModeTapMaxMs = 550;
+        private volatile bool gamepadPassthrough;
+        private bool stickChordActive;
+        private DateTime stickChordStartUtc;
+        private string gamepadPassScriptId;
+        private readonly List<CoreWebView2Frame> trackedFrames = new List<CoreWebView2Frame>();
+
+        private void HandleGameModeChord(WebBrowserGamepadInputState state)
+        {
+            var both = state.LeftStickHeld && state.RightStickHeld;
+            if (both && !stickChordActive)
+            {
+                stickChordActive = true;
+                stickChordStartUtc = DateTime.UtcNow;
+                return;
+            }
+
+            if (!both && stickChordActive)
+            {
+                stickChordActive = false;
+                if (viewMode == AnikiWebBrowserViewMode.Web &&
+                    (DateTime.UtcNow - stickChordStartUtc).TotalMilliseconds <= GameModeTapMaxMs)
+                {
+                    InvokeOnUi(ToggleGameModeCore);
+                }
+            }
+        }
+
+        private void Core_FrameCreated(object sender, CoreWebView2FrameCreatedEventArgs e)
+        {
+            var frame = e.Frame;
+            if (frame == null)
+            {
+                return;
+            }
+
+            trackedFrames.Add(frame);
+            frame.Destroyed += (s, args) => trackedFrames.Remove(frame);
+        }
+
+        private async void ToggleGameModeCore()
+        {
+            var core = webView?.CoreWebView2;
+            if (core == null || viewMode != AnikiWebBrowserViewMode.Web)
+            {
+                return;
+            }
+
+            var on = !gamepadPassthrough;
+            gamepadPassthrough = on;
+
+            try
+            {
+                if (on)
+                {
+                    pointerController.SuspendInput();
+                    gamepadPassScriptId = await core.AddScriptToExecuteOnDocumentCreatedAsync(
+                        "window.__anikiPadPass = true;");
+                }
+                else
+                {
+                    RemoveGamepadPassScript(core);
+                    pointerController.ResumeInput(windowHost);
+                }
+
+                await ApplyPadPassToPageAsync(core, on, true);
+            }
+            catch (Exception ex)
+            {
+                logger?.Warn(ex, "[AnikiHelper][WebBrowser] Game controller mode toggle failed.");
+            }
+        }
+
+        private void RemoveGamepadPassScript(CoreWebView2 core)
+        {
+            if (gamepadPassScriptId != null)
+            {
+                try { core?.RemoveScriptToExecuteOnDocumentCreated(gamepadPassScriptId); } catch { }
+                gamepadPassScriptId = null;
+            }
+        }
+
+        private async Task ApplyPadPassToPageAsync(CoreWebView2 core, bool on, bool showToast)
+        {
+            var value = on ? "true" : "false";
+            var js = "try { window.__anikiSetPadPass && window.__anikiSetPadPass(" + value + "); } catch (e) { }";
+            try { await core.ExecuteScriptAsync(js); } catch { }
+
+            foreach (var frame in trackedFrames.ToList())
+            {
+                try { await frame.ExecuteScriptAsync(js); } catch { }
+            }
+
+            if (showToast)
+            {
+                var text = on
+                    ? "Game controller mode — tap L3+R3 for cursor"
+                    : "Cursor mode";
+                var toast =
+                    "(() => { try {" +
+                    "const d = document.createElement('div');" +
+                    "d.textContent = '" + text + "';" +
+                    "d.style.cssText = 'position:fixed;top:28px;left:50%;transform:translateX(-50%);z-index:2147483647;" +
+                    "background:rgba(22,20,30,.9);color:#fff;font:600 20px Segoe UI,sans-serif;padding:12px 24px;" +
+                    "border-radius:12px;border:2px solid #7d5cc4;pointer-events:none;transition:opacity .4s';" +
+                    "(document.fullscreenElement || document.documentElement).appendChild(d);" +
+                    "setTimeout(() => { d.style.opacity = '0'; setTimeout(() => d.remove(), 500); }, 1800);" +
+                    "} catch (e) { } })();";
+                try { await core.ExecuteScriptAsync(toast); } catch { }
+            }
+        }
+
+        private void ResetGameModeCore()
+        {
+            stickChordActive = false;
+            if (!gamepadPassthrough)
+            {
+                return;
+            }
+
+            gamepadPassthrough = false;
+            var core = webView?.CoreWebView2;
+            RemoveGamepadPassScript(core);
+            if (core != null)
+            {
+                var ignored = ApplyPadPassToPageAsync(core, false, false);
+            }
         }
 
         // ---- Custom: cursor manager (custom cursors, hand over links, hide when idle) ----
