@@ -224,6 +224,7 @@ namespace AnikiHelper.Services.WebBrowser
         } catch (_) { }
         return 'default';
     };
+    let lastOverFrame = null;
     const flushCursor = () => {
         cursorFrame = 0;
         const kind = classify(pendingTarget);
@@ -231,7 +232,62 @@ namespace AnikiHelper.Services.WebBrowser
             lastCursor = kind;
             try { window.chrome.webview.postMessage('aniki-cursor:' + kind); } catch (_) { }
         }
+        const overFrame = !!(pendingTarget && /^(IFRAME|FRAME|EMBED|OBJECT)$/.test(pendingTarget.tagName || ''));
+        if (overFrame !== lastOverFrame) {
+            lastOverFrame = overFrame;
+            try { window.chrome.webview.postMessage('aniki-frame:' + (overFrame ? '1' : '0')); } catch (_) { }
+        }
     };
+
+    // Custom: controller scrolling animated by the page itself, once per displayed
+    // frame. The host only sends the stick's target speed (-1..1, + = down).
+    if (window.top === window) {
+        const MAX_PX_PER_SEC = 3000;
+        let px = window.innerWidth / 2, py = window.innerHeight / 2;
+        let target = 0, vel = 0, rem = 0, lastT = 0, raf = 0, scroller = null;
+        window.addEventListener('pointermove', e => { px = e.clientX; py = e.clientY; scroller = null; }, { capture: true, passive: true });
+        const findScroller = () => {
+            let el = document.elementFromPoint(px, py);
+            while (el && el !== document.body && el !== document.documentElement) {
+                try {
+                    const oy = getComputedStyle(el).overflowY;
+                    if (/(auto|scroll|overlay)/.test(oy) && el.scrollHeight > el.clientHeight + 1) { return el; }
+                } catch (_) { }
+                el = el.parentElement;
+            }
+            return null;
+        };
+        const step = t => {
+            const dt = Math.min(0.05, Math.max(0.001, (t - lastT) / 1000));
+            lastT = t;
+            const k = target !== 0 ? 9 : 5;
+            vel += (target * MAX_PX_PER_SEC - vel) * (1 - Math.exp(-k * dt));
+            if (target === 0 && Math.abs(vel) < 4) { vel = 0; rem = 0; raf = 0; return; }
+            rem += vel * dt;
+            const move = Math.trunc(rem);
+            if (move !== 0) {
+                rem -= move;
+                if (scroller === null) { scroller = findScroller() || false; }
+                try {
+                    if (scroller) { scroller.scrollBy({ top: move, behavior: 'instant' }); }
+                    else { window.scrollBy({ top: move, behavior: 'instant' }); }
+                } catch (_) { }
+            }
+            raf = requestAnimationFrame(step);
+        };
+        try {
+            window.chrome.webview.addEventListener('message', e => {
+                const d = e.data;
+                if (typeof d !== 'string' || d.indexOf('aniki-scroll:') !== 0) { return; }
+                target = Math.max(-1, Math.min(1, parseFloat(d.slice(13)) || 0));
+                if (!raf && target !== 0) {
+                    scroller = null;
+                    lastT = performance.now();
+                    raf = requestAnimationFrame(step);
+                }
+            });
+        } catch (_) { }
+    }
     const queueCursor = e => {
         pendingTarget = e.target;
         if (!cursorFrame) { cursorFrame = requestAnimationFrame(flushCursor); }
@@ -293,6 +349,7 @@ namespace AnikiHelper.Services.WebBrowser
             this.favoritesProvider = favoritesProvider;
             this.userDataFolder = ResolveUserDataFolder(api, userDataFolder);
             pointerController = new BrowserPointerController(logger, FooterHeight);
+            pointerController.PageScrollSink = SendPageScroll;
 
             // Run the size check away from the UI thread. WebView initialization waits
             // for this task before opening the profile, so cache files cannot be deleted
@@ -1842,6 +1899,10 @@ namespace AnikiHelper.Services.WebBrowser
                 {
                     RegisterFooterActivityCore();
                 }
+                else if (message != null && message.StartsWith("aniki-frame:", StringComparison.Ordinal))
+                {
+                    pointerOverFrame = message.EndsWith("1", StringComparison.Ordinal);
+                }
                 else if (message != null && message.StartsWith("aniki-cursor:", StringComparison.Ordinal))
                 {
                     pageCursorKind = message.Substring("aniki-cursor:".Length);
@@ -3219,6 +3280,44 @@ namespace AnikiHelper.Services.WebBrowser
             }
         }
 
+        // ---- Custom: page-driven smooth scrolling ----
+        private volatile bool pointerOverFrame;
+        private double lastPageScrollSent;
+
+        private bool SendPageScroll(double speed)
+        {
+            var core = webView?.CoreWebView2;
+            if (core == null || viewMode != AnikiWebBrowserViewMode.Web || pointerOverFrame)
+            {
+                if (lastPageScrollSent != 0)
+                {
+                    lastPageScrollSent = 0;
+                    PostPageScroll(0);
+                }
+
+                return false;
+            }
+
+            if (speed == lastPageScrollSent ||
+                (speed != 0 && lastPageScrollSent != 0 && Math.Abs(speed - lastPageScrollSent) < 0.015))
+            {
+                return true;
+            }
+
+            lastPageScrollSent = speed;
+            PostPageScroll(speed);
+            return true;
+        }
+
+        private void PostPageScroll(double speed)
+        {
+            var message = "aniki-scroll:" + speed.ToString("0.####", System.Globalization.CultureInfo.InvariantCulture);
+            InvokeOnUi(delegate
+            {
+                try { webView?.CoreWebView2?.PostWebMessageAsString(message); } catch { }
+            });
+        }
+
         // ---- Custom: cursor manager (custom cursors, hand over links, hide when idle) ----
         private const int CursorIdleHideMs = 5000;
         private DispatcherTimer cursorIdleTimer;
@@ -3432,6 +3531,7 @@ namespace AnikiHelper.Services.WebBrowser
         private const int WheelDelta = 120;
 
         private readonly ILogger logger;
+        public Func<double, bool> PageScrollSink;
         private double bottomInsetDip;
         private readonly object stateLock = new object();
         private readonly Input[] inputBuffer = new Input[1];
@@ -3608,6 +3708,16 @@ namespace AnikiHelper.Services.WebBrowser
                     targetVelocity = Math.Sign(stickScrollDirection) *
                                      Math.Pow(Math.Abs(stickScrollDirection), 1.6) *
                                      StickScrollMaximumUnitsPerFrame;
+                }
+
+                // Preferred path: the page animates the scroll itself every displayed frame.
+                var sink = PageScrollSink;
+                var pageSpeed = targetVelocity == 0 ? 0.0 : -targetVelocity / StickScrollMaximumUnitsPerFrame;
+                if (sink != null && sink(pageSpeed))
+                {
+                    edgeScrollVelocity = 0;
+                    edgeWheelRemainder = 0;
+                    return;
                 }
 
                 var easing = targetVelocity == 0 ? StickScrollReleaseEasing : StickScrollPressEasing;
