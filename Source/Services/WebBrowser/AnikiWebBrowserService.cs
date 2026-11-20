@@ -2736,7 +2736,11 @@ namespace AnikiHelper.Services.WebBrowser
                 "--disable-background-timer-throttling " +
                 "--ignore-gpu-blocklist " +
                 "--enable-gpu-rasterization " +
-                "--enable-zero-copy";
+                "--enable-zero-copy " +
+                // Read Xbox controllers through XInput instead of Windows.Gaming.Input:
+                // WGI only reports input to the foreground process, and the WebView2
+                // processes are never foreground (Playnite owns the window).
+                "--disable-features=EnableWindowsGamingInputDataFetcher";
             return options;
         }
 
