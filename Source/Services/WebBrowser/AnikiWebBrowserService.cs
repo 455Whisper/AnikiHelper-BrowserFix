@@ -2625,10 +2625,16 @@ namespace AnikiHelper.Services.WebBrowser
 
             customExtensionsLoaded = true;
 
+            var report = new System.Text.StringBuilder();
+            report.AppendLine("Aniki browser extension report - " + DateTime.Now);
+            string folder = null;
+
             try
             {
-                var folder = GetCustomExtensionsFolder();
+                folder = GetCustomExtensionsFolder();
                 Directory.CreateDirectory(folder);
+                report.AppendLine("Extensions folder: " + folder);
+                report.AppendLine("WebView2 runtime: " + CoreWebView2Environment.GetAvailableBrowserVersionString());
 
                 var installed = await core.Profile.GetBrowserExtensionsAsync();
                 foreach (var ext in installed)
@@ -2636,28 +2642,47 @@ namespace AnikiHelper.Services.WebBrowser
                     try { await ext.RemoveAsync(); } catch { }
                 }
 
-                foreach (var dir in Directory.GetDirectories(folder))
+                var dirs = Directory.GetDirectories(folder);
+                if (dirs.Length == 0)
+                {
+                    report.AppendLine("No extension folders found.");
+                }
+
+                foreach (var dir in dirs)
                 {
                     if (!File.Exists(Path.Combine(dir, "manifest.json")))
                     {
+                        report.AppendLine("SKIPPED (no manifest.json directly inside): " + dir);
                         continue;
                     }
 
                     try
                     {
                         var ext = await core.Profile.AddBrowserExtensionAsync(dir);
+                        report.AppendLine("LOADED: " + ext.Name + " | id " + ext.Id + " | " + dir);
                         logger.Info("[AnikiHelper][WebBrowser][Extensions] Loaded: " + ext.Name + " (" + dir + ")");
                     }
                     catch (Exception ex)
                     {
+                        report.AppendLine("FAILED: " + dir + " -> " + ex.GetType().Name + ": " + ex.Message);
                         logger.Warn(ex, "[AnikiHelper][WebBrowser][Extensions] Failed to load: " + dir);
                     }
                 }
             }
             catch (Exception ex)
             {
+                report.AppendLine("ERROR: " + ex.GetType().Name + ": " + ex.Message);
                 logger.Warn(ex, "[AnikiHelper][WebBrowser][Extensions] Extension loading failed.");
             }
+
+            try
+            {
+                if (folder != null)
+                {
+                    File.WriteAllText(Path.Combine(folder, "extension-report.txt"), report.ToString());
+                }
+            }
+            catch { }
         }
 
         private static string ResolveUserDataFolder(IPlayniteAPI api, string requestedFolder)
