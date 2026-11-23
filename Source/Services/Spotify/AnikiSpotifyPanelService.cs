@@ -305,6 +305,7 @@ namespace AnikiHelper.Services.Spotify
                 closing = true;
                 IsOpen = false;
                 StopTimers();
+                CloseSide(false);
                 ReleaseExclusiveController();
 
                 var anim = new DoubleAnimation(slide.Y, -window.Height, TimeSpan.FromMilliseconds(180))
@@ -372,13 +373,331 @@ namespace AnikiHelper.Services.Spotify
             var height = Math.Min(Math.Max(560, screenHeight * 0.82), 1000);
             var left = Math.Max(screenLeft + 20, Math.Min(screenLeft + screenWidth - width - 20, centerX - width / 2));
 
-            window.Width = width;
+            window.Width = width + SideGap + SideWidth;
             window.Height = height;
             window.Left = left;
             window.Top = screenTop;
             root.Width = width;
             root.Height = height;
+
+            var sideTop = Math.Min(170, Math.Max(60, height - 620));
+            sidePanel.Margin = new Thickness(width + SideGap, sideTop, 0, 0);
+            sidePanel.Height = Math.Min(560, height - sideTop - 20);
         }
+
+        private Grid windowHost;
+        private Border sidePanel;
+        private TranslateTransform sideSlide;
+        private TextBlock tabTitle;
+        private TextBlock sideStatus;
+        private ScrollViewer sideScroll;
+        private ItemsControl audioList;
+        private Button prevTabButton;
+        private Button nextTabButton;
+        private Button sideToggleButton;
+        private DispatcherTimer sideRefreshTimer;
+        private AudioMixerSource mixer;
+        private readonly ObservableCollection<AudioEntry> audioEntries = new ObservableCollection<AudioEntry>();
+        private bool showingMixer;
+
+        private bool IsSideOpen
+        {
+            get { return sidePanel != null && sidePanel.Visibility == Visibility.Visible; }
+        }
+
+        private void BuildSidePanel()
+        {
+            sidePanel = (Border)XamlReader.Parse(SideXaml);
+            sideSlide = (TranslateTransform)sidePanel.FindName("SideSlide");
+            tabTitle = (TextBlock)sidePanel.FindName("TabTitle");
+            sideStatus = (TextBlock)sidePanel.FindName("SideStatus");
+            sideScroll = (ScrollViewer)sidePanel.FindName("SideScroll");
+            audioList = (ItemsControl)sidePanel.FindName("AudioList");
+            prevTabButton = (Button)sidePanel.FindName("PrevTabBtn");
+            nextTabButton = (Button)sidePanel.FindName("NextTabBtn");
+            audioList.ItemsSource = audioEntries;
+            sidePanel.Visibility = Visibility.Collapsed;
+            sidePanel.HorizontalAlignment = HorizontalAlignment.Left;
+            sidePanel.VerticalAlignment = VerticalAlignment.Top;
+
+            prevTabButton.Click += (s, e) => SwitchTab();
+            nextTabButton.Click += (s, e) => SwitchTab();
+
+            sideRefreshTimer = new DispatcherTimer(DispatcherPriority.Background) { Interval = TimeSpan.FromMilliseconds(1500) };
+            sideRefreshTimer.Tick += (s, e) =>
+            {
+                if (IsSideOpen && mixer != null)
+                {
+                    mixer.RefreshValues(audioEntries);
+                }
+            };
+        }
+
+        private void ToggleSide()
+        {
+            if (IsSideOpen)
+            {
+                CloseSide(true);
+            }
+            else
+            {
+                OpenSide();
+            }
+        }
+
+        private void OpenSide()
+        {
+            if (sidePanel == null || IsSideOpen)
+            {
+                return;
+            }
+
+            if (mixer == null)
+            {
+                mixer = new AudioMixerSource(logger);
+            }
+
+            sidePanel.Visibility = Visibility.Visible;
+            sideToggleButton.Content = "";
+            sidePanel.BeginAnimation(UIElement.OpacityProperty, new DoubleAnimation(0, 1, TimeSpan.FromMilliseconds(200)));
+            sideSlide.BeginAnimation(TranslateTransform.XProperty, new DoubleAnimation(-30, 0, TimeSpan.FromMilliseconds(240))
+            {
+                EasingFunction = new CubicEase { EasingMode = EasingMode.EaseOut }
+            });
+            LoadSideList();
+            sideRefreshTimer.Start();
+        }
+
+        private void CloseSide(bool focusToggle)
+        {
+            if (sidePanel == null || !IsSideOpen)
+            {
+                return;
+            }
+
+            sideRefreshTimer.Stop();
+            sidePanel.BeginAnimation(UIElement.OpacityProperty, null);
+            sidePanel.Visibility = Visibility.Collapsed;
+            sideToggleButton.Content = "";
+            if (focusToggle)
+            {
+                FocusLater(sideToggleButton);
+            }
+        }
+
+        private void SwitchTab()
+        {
+            showingMixer = !showingMixer;
+            LoadSideList();
+        }
+
+        private void LoadSideList()
+        {
+            tabTitle.Text = showingMixer ? "Mixer" : "Playback devices";
+            audioEntries.Clear();
+            var entries = showingMixer ? mixer.GetApps() : mixer.GetDevices();
+            foreach (var entry in entries)
+            {
+                audioEntries.Add(entry);
+            }
+
+            sideStatus.Text = showingMixer ? "No apps are playing sound." : "No playback devices found.";
+            sideStatus.Visibility = audioEntries.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
+            sideScroll.ScrollToTop();
+
+            // Land on the first slider; fall back to the tab arrow.
+            window.Dispatcher.BeginInvoke(new Action(() =>
+            {
+                var firstSlider = FindFirst<Slider>(audioList);
+                FocusLater(firstSlider != null ? (UIElement)firstSlider : nextTabButton);
+            }), DispatcherPriority.Loaded);
+        }
+
+        private static T FindFirst<T>(DependencyObject parent) where T : DependencyObject
+        {
+            if (parent == null)
+            {
+                return null;
+            }
+
+            for (var i = 0; i < VisualTreeHelper.GetChildrenCount(parent); i++)
+            {
+                var child = VisualTreeHelper.GetChild(parent, i);
+                var match = child as T ?? FindFirst<T>(child);
+                if (match != null)
+                {
+                    return match;
+                }
+            }
+
+            return null;
+        }
+
+        // ======================= devices / mixer side box =======================
+
+        private const double SideWidth = 460;
+        private const double SideGap = 18;
+
+        private const string SideXaml = @"
+<Border xmlns='http://schemas.microsoft.com/winfx/2006/xaml/presentation'
+        xmlns:x='http://schemas.microsoft.com/winfx/2006/xaml'
+        Width='460' Background='#F2141414' BorderBrush='#F0FFFFFF' BorderThickness='3'
+        CornerRadius='18' Padding='18,16,14,16'
+        TextElement.FontFamily='Segoe UI Variable Display, Segoe UI'>
+  <Border.RenderTransform>
+    <TranslateTransform x:Name='SideSlide'/>
+  </Border.RenderTransform>
+  <Border.Resources>
+    <Style x:Key='SmallIconBtn' TargetType='Button'>
+      <Setter Property='Foreground' Value='#FFFFFF'/>
+      <Setter Property='FontFamily' Value='Segoe Fluent Icons, Segoe MDL2 Assets'/>
+      <Setter Property='FontSize' Value='22'/>
+      <Setter Property='Width' Value='54'/>
+      <Setter Property='Height' Value='54'/>
+      <Setter Property='Cursor' Value='Hand'/>
+      <Setter Property='FocusVisualStyle' Value='{x:Null}'/>
+      <Setter Property='Template'>
+        <Setter.Value>
+          <ControlTemplate TargetType='Button'>
+            <Border x:Name='Bd' Background='Transparent' CornerRadius='27' BorderThickness='3' BorderBrush='Transparent'>
+              <ContentPresenter HorizontalAlignment='Center' VerticalAlignment='Center'/>
+            </Border>
+            <ControlTemplate.Triggers>
+              <Trigger Property='IsMouseOver' Value='True'>
+                <Setter TargetName='Bd' Property='Background' Value='#22FFFFFF'/>
+              </Trigger>
+              <Trigger Property='IsKeyboardFocused' Value='True'>
+                <Setter TargetName='Bd' Property='Background' Value='#30FFFFFF'/>
+                <Setter TargetName='Bd' Property='BorderBrush' Value='#1DB954'/>
+              </Trigger>
+            </ControlTemplate.Triggers>
+          </ControlTemplate>
+        </Setter.Value>
+      </Setter>
+    </Style>
+    <Style x:Key='VolumeSlider' TargetType='Slider'>
+      <Setter Property='FocusVisualStyle' Value='{x:Null}'/>
+      <Setter Property='Minimum' Value='0'/>
+      <Setter Property='Maximum' Value='100'/>
+      <Setter Property='SmallChange' Value='2'/>
+      <Setter Property='LargeChange' Value='5'/>
+      <Setter Property='IsMoveToPointEnabled' Value='True'/>
+      <Setter Property='Cursor' Value='Hand'/>
+      <Setter Property='Template'>
+        <Setter.Value>
+          <ControlTemplate TargetType='Slider'>
+            <Border x:Name='Frame' Padding='10,2' CornerRadius='17' BorderThickness='2' BorderBrush='Transparent' Background='Transparent'>
+              <Grid Height='30'>
+                <Border Height='6' CornerRadius='3' Background='#33FFFFFF' VerticalAlignment='Center'/>
+                <Track x:Name='PART_Track'>
+                  <Track.DecreaseRepeatButton>
+                    <RepeatButton Command='Slider.DecreaseLarge' Focusable='False' IsTabStop='False'>
+                      <RepeatButton.Template>
+                        <ControlTemplate TargetType='RepeatButton'>
+                          <Grid Background='Transparent'>
+                            <Border Height='6' CornerRadius='3' Background='#5EE3E8' VerticalAlignment='Center'/>
+                          </Grid>
+                        </ControlTemplate>
+                      </RepeatButton.Template>
+                    </RepeatButton>
+                  </Track.DecreaseRepeatButton>
+                  <Track.IncreaseRepeatButton>
+                    <RepeatButton Command='Slider.IncreaseLarge' Focusable='False' IsTabStop='False'>
+                      <RepeatButton.Template>
+                        <ControlTemplate TargetType='RepeatButton'>
+                          <Grid Background='Transparent'/>
+                        </ControlTemplate>
+                      </RepeatButton.Template>
+                    </RepeatButton>
+                  </Track.IncreaseRepeatButton>
+                  <Track.Thumb>
+                    <Thumb Focusable='False'>
+                      <Thumb.Template>
+                        <ControlTemplate TargetType='Thumb'>
+                          <Ellipse Width='20' Height='20' Fill='#FFFFFF'/>
+                        </ControlTemplate>
+                      </Thumb.Template>
+                    </Thumb>
+                  </Track.Thumb>
+                </Track>
+              </Grid>
+            </Border>
+            <ControlTemplate.Triggers>
+              <Trigger Property='IsKeyboardFocused' Value='True'>
+                <Setter TargetName='Frame' Property='BorderBrush' Value='#1DB954'/>
+                <Setter TargetName='Frame' Property='Background' Value='#1FFFFFFF'/>
+              </Trigger>
+            </ControlTemplate.Triggers>
+          </ControlTemplate>
+        </Setter.Value>
+      </Setter>
+    </Style>
+    <Style TargetType='ScrollBar'>
+      <Setter Property='Width' Value='8'/>
+      <Setter Property='MinWidth' Value='8'/>
+      <Setter Property='Template'>
+        <Setter.Value>
+          <ControlTemplate TargetType='ScrollBar'>
+            <Grid>
+              <Border CornerRadius='4' Background='#26FFFFFF'/>
+              <Track x:Name='PART_Track' IsDirectionReversed='True'>
+                <Track.Thumb>
+                  <Thumb>
+                    <Thumb.Template>
+                      <ControlTemplate TargetType='Thumb'>
+                        <Border CornerRadius='4' Background='#F2D94A'/>
+                      </ControlTemplate>
+                    </Thumb.Template>
+                  </Thumb>
+                </Track.Thumb>
+              </Track>
+            </Grid>
+          </ControlTemplate>
+        </Setter.Value>
+      </Setter>
+    </Style>
+    <DataTemplate x:Key='AudioRow'>
+      <StackPanel Margin='0,6,0,12'>
+        <TextBlock Text='{Binding Name}' FontSize='21' Foreground='#FFFFFF' HorizontalAlignment='Center'
+                   TextTrimming='CharacterEllipsis' Margin='8,0'/>
+        <Grid Margin='0,6,0,0'>
+          <Grid.ColumnDefinitions>
+            <ColumnDefinition Width='Auto'/>
+            <ColumnDefinition Width='*'/>
+            <ColumnDefinition Width='56'/>
+          </Grid.ColumnDefinitions>
+          <TextBlock Text='&#xE767;' FontFamily='Segoe Fluent Icons, Segoe MDL2 Assets' FontSize='20'
+                     Foreground='#7FB8FF' VerticalAlignment='Center' Margin='4,0,0,0'/>
+          <Slider Grid.Column='1' Margin='6,0' Style='{StaticResource VolumeSlider}'
+                  Value='{Binding Volume, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}'/>
+          <TextBlock Grid.Column='2' Text='{Binding Percent}' FontSize='17' Foreground='#CFCFCF'
+                     VerticalAlignment='Center' TextAlignment='Right'/>
+        </Grid>
+      </StackPanel>
+    </DataTemplate>
+  </Border.Resources>
+  <DockPanel>
+    <Grid DockPanel.Dock='Top' Margin='0,0,4,10'>
+      <Grid.ColumnDefinitions>
+        <ColumnDefinition Width='Auto'/>
+        <ColumnDefinition Width='*'/>
+        <ColumnDefinition Width='Auto'/>
+      </Grid.ColumnDefinitions>
+      <Button x:Name='PrevTabBtn' Style='{StaticResource SmallIconBtn}' Content='&#xE76B;'/>
+      <TextBlock x:Name='TabTitle' Grid.Column='1' FontSize='25' FontWeight='SemiBold' Foreground='#FFFFFF'
+                 HorizontalAlignment='Center' VerticalAlignment='Center' Text='Playback devices'/>
+      <Button x:Name='NextTabBtn' Grid.Column='2' Style='{StaticResource SmallIconBtn}' Content='&#xE76C;'/>
+    </Grid>
+    <TextBlock x:Name='SideStatus' DockPanel.Dock='Bottom' FontSize='16' Foreground='#9A9A9A'
+               HorizontalAlignment='Center' Margin='0,8,0,0' Visibility='Collapsed'/>
+    <ScrollViewer x:Name='SideScroll' Focusable='False' VerticalScrollBarVisibility='Visible'
+                  HorizontalScrollBarVisibility='Disabled' PanningMode='VerticalOnly'>
+      <ItemsControl x:Name='AudioList' Focusable='False' Margin='0,0,10,0'
+                    ItemTemplate='{StaticResource AudioRow}'
+                    KeyboardNavigation.DirectionalNavigation='Continue'/>
+    </ScrollViewer>
+  </DockPanel>
+</Border>";
 
         // ======================= window construction =======================
 
@@ -462,9 +781,21 @@ namespace AnikiHelper.Services.Spotify
                 ResizeMode = ResizeMode.NoResize,
                 Topmost = true,
                 ShowActivated = true,
-                Title = "Spotify",
-                Content = root
+                Title = "Spotify"
             };
+
+            sideToggleButton = (Button)root.FindName("SideToggleBtn");
+            sideToggleButton.Content = "\uE76C";
+            sideToggleButton.Click += (s, e) => ToggleSide();
+            BuildSidePanel();
+            root.HorizontalAlignment = HorizontalAlignment.Left;
+            root.VerticalAlignment = VerticalAlignment.Top;
+            windowHost = new Grid();
+            KeyboardNavigation.SetDirectionalNavigation(windowHost, KeyboardNavigationMode.Contained);
+            KeyboardNavigation.SetTabNavigation(windowHost, KeyboardNavigationMode.Cycle);
+            windowHost.Children.Add(root);
+            windowHost.Children.Add(sidePanel);
+            window.Content = windowHost;
 
             try
             {
@@ -481,7 +812,7 @@ namespace AnikiHelper.Services.Spotify
             window.GotKeyboardFocus += (s, e) =>
             {
                 var element = e.NewFocus as FrameworkElement;
-                if (element != null && IsInside(element, listScroll))
+                if (element != null && (IsInside(element, listScroll) || IsInside(element, sideScroll)))
                 {
                     element.BringIntoView(new Rect(0, -60, element.ActualWidth, element.ActualHeight + 120));
                 }
@@ -1234,6 +1565,12 @@ namespace AnikiHelper.Services.Spotify
                     return;
                 }
 
+                if (state.BackPressed && IsSideOpen)
+                {
+                    CloseSide(true);
+                    return;
+                }
+
                 if (state.BackPressed || state.ClosePressed)
                 {
                     Close();
@@ -1248,7 +1585,7 @@ namespace AnikiHelper.Services.Spotify
                 if (state.ActivatePressed)
                 {
                     var button = Keyboard.FocusedElement as ButtonBase;
-                    if (button != null && IsInside(button, root))
+                    if (button != null && IsInside(button, windowHost))
                     {
                         Invoke(button);
                     }
@@ -1306,7 +1643,9 @@ namespace AnikiHelper.Services.Spotify
             if (Math.Abs(ry) > 0.2 && listScroll != null && mainView.Visibility == Visibility.Visible)
             {
                 var speed = Math.Sign(ry) * Math.Pow((Math.Abs(ry) - 0.2) / 0.8, 1.5) * 28;
-                listScroll.ScrollToVerticalOffset(listScroll.VerticalOffset + speed);
+                var focusedElement = Keyboard.FocusedElement as DependencyObject;
+                var target = IsSideOpen && focusedElement != null && IsInside(focusedElement, sidePanel) ? sideScroll : listScroll;
+                target.ScrollToVerticalOffset(target.VerticalOffset + speed);
             }
         }
 
@@ -1318,9 +1657,17 @@ namespace AnikiHelper.Services.Spotify
             }
 
             var focused = Keyboard.FocusedElement as UIElement;
-            if (focused == null || !IsInside(focused, root))
+            if (focused == null || !IsInside(focused, windowHost))
             {
                 FocusLater(mainView.Visibility == Visibility.Visible ? playButton : setupPrimary);
+                return;
+            }
+
+            var slider = focused as Slider;
+            if (slider != null && (direction == FocusNavigationDirection.Left || direction == FocusNavigationDirection.Right))
+            {
+                slider.Value = Math.Max(slider.Minimum, Math.Min(slider.Maximum,
+                    slider.Value + (direction == FocusNavigationDirection.Right ? 5 : -5)));
                 return;
             }
 
@@ -1482,8 +1829,8 @@ namespace AnikiHelper.Services.Spotify
         x:Name='Root' Background='#FF141414' CornerRadius='0,0,20,20'
         BorderBrush='#26FFFFFF' BorderThickness='1,0,1,1'
         TextElement.FontFamily='Segoe UI Variable Display, Segoe UI'
-        KeyboardNavigation.DirectionalNavigation='Contained'
-        KeyboardNavigation.TabNavigation='Cycle'>
+        KeyboardNavigation.DirectionalNavigation='Continue'
+        KeyboardNavigation.TabNavigation='Continue'>
   <Border.RenderTransform>
     <TranslateTransform x:Name='Slide'/>
   </Border.RenderTransform>
@@ -1610,6 +1957,9 @@ namespace AnikiHelper.Services.Spotify
       <Border Background='#73000000'/>
     </Grid>
     <Grid x:Name='MainView'>
+      <Button x:Name='SideToggleBtn' Grid.RowSpan='4' Panel.ZIndex='5' Style='{StaticResource IconBtn}'
+              Width='46' Height='96' FontSize='24' Foreground='#FFFFFF'
+              HorizontalAlignment='Right' VerticalAlignment='Center' Margin='0,0,4,0'/>
       <Grid.RowDefinitions>
         <RowDefinition Height='Auto'/>
         <RowDefinition Height='Auto'/>
