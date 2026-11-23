@@ -82,6 +82,7 @@ namespace AnikiHelper.Services.Spotify
         private static ImageSource defaultBackground;
         private TextBlock titleText;
         private TextBlock artistText;
+        private TextBlock deviceText;
         private Button heartButton;
         private Button shuffleButton;
         private Button previousButton;
@@ -276,8 +277,8 @@ namespace AnikiHelper.Services.Spotify
                     AcquireExclusiveController();
                     OpenStateChanged?.Invoke(true);
 
-                    slide.Y = -window.Height;
-                    var anim = new DoubleAnimation(-window.Height, 0, TimeSpan.FromMilliseconds(260))
+                    slide.Y = -root.Height;
+                    var anim = new DoubleAnimation(-root.Height, 0, TimeSpan.FromMilliseconds(260))
                     {
                         EasingFunction = new CubicEase { EasingMode = EasingMode.EaseOut }
                     };
@@ -308,7 +309,7 @@ namespace AnikiHelper.Services.Spotify
                 CloseSide(false);
                 ReleaseExclusiveController();
 
-                var anim = new DoubleAnimation(slide.Y, -window.Height, TimeSpan.FromMilliseconds(180))
+                var anim = new DoubleAnimation(slide.Y, -root.Height, TimeSpan.FromMilliseconds(180))
                 {
                     EasingFunction = new CubicEase { EasingMode = EasingMode.EaseIn }
                 };
@@ -318,6 +319,7 @@ namespace AnikiHelper.Services.Spotify
                     {
                         window.Hide();
                         closing = false;
+                        ActivatePlayniteMainWindow();
                     }
                 };
                 slide.BeginAnimation(TranslateTransform.YProperty, anim);
@@ -326,15 +328,29 @@ namespace AnikiHelper.Services.Spotify
             });
         }
 
+        [System.Runtime.InteropServices.DllImport("user32.dll")]
+        private static extern bool SetForegroundWindow(IntPtr hwnd);
+
         private void ActivatePlayniteMainWindow()
         {
             try
             {
                 var main = Application.Current?.MainWindow;
-                if (main != null && main != window)
+                if (main == null || main == window)
                 {
-                    main.Activate();
+                    return;
                 }
+
+                // The theme hides parts of the library/hub while Playnite's window is inactive,
+                // so focus must come back to it (not to whatever window was behind the panel).
+                var handle = new System.Windows.Interop.WindowInteropHelper(main).Handle;
+                if (handle != IntPtr.Zero)
+                {
+                    SetForegroundWindow(handle);
+                }
+
+                main.Activate();
+                main.Focus();
             }
             catch
             {
@@ -369,12 +385,18 @@ namespace AnikiHelper.Services.Spotify
             // Always centred horizontally on the screen, dropping down from the top edge.
             var centerX = screenLeft + screenWidth / 2;
 
-            var width = Math.Min(PanelWidth, screenWidth - 40);
-            var height = Math.Min(Math.Max(560, screenHeight * 0.82), 1000);
-            var left = Math.Max(screenLeft + 20, Math.Min(screenLeft + screenWidth - width - 20, centerX - width / 2));
+            // Designed for a 1460x1000 area; shrink uniformly on smaller (or Windows-scaled) screens
+            // so the panel and the volume box always fit.
+            var scale = Math.Min(1.0, Math.Min(screenWidth / 1460.0, screenHeight / 1000.0));
+            windowHost.LayoutTransform = new ScaleTransform(scale, scale);
 
-            window.Width = width + SideGap + SideWidth;
-            window.Height = height;
+            var width = PanelWidth;
+            var height = Math.Min(1000, Math.Max(560, screenHeight * 0.85 / scale));
+            var scaledWidth = width * scale;
+            var left = Math.Max(screenLeft + 10, Math.Min(screenLeft + screenWidth - scaledWidth - 10, centerX - scaledWidth / 2));
+
+            window.Width = (width + SideGap + SideWidth) * scale;
+            window.Height = height * scale;
             window.Left = left;
             window.Top = screenTop;
             root.Width = width;
@@ -729,6 +751,7 @@ namespace AnikiHelper.Services.Spotify
             };
             titleText = (TextBlock)root.FindName("TitleText");
             artistText = (TextBlock)root.FindName("ArtistText");
+            deviceText = (TextBlock)root.FindName("DeviceText");
             heartButton = (Button)root.FindName("HeartBtn");
             shuffleButton = (Button)root.FindName("ShuffleBtn");
             previousButton = (Button)root.FindName("PrevBtn");
@@ -1054,6 +1077,8 @@ namespace AnikiHelper.Services.Spotify
                 repeatState = (string)body["repeat_state"] ?? "off";
                 progressMs = (double?)body["progress_ms"] ?? 0;
                 progressStampUtc = DateTime.UtcNow;
+                var deviceName = (string)body["device"]?["name"];
+                deviceText.Text = string.IsNullOrEmpty(deviceName) ? string.Empty : "Playing on " + deviceName;
                 var deviceId = (string)body["device"]?["id"];
                 if (!string.IsNullOrEmpty(deviceId))
                 {
@@ -1101,6 +1126,7 @@ namespace AnikiHelper.Services.Spotify
             durationMs = 0;
             progressMs = 0;
             titleText.Text = "Nothing playing";
+            deviceText.Text = string.Empty;
             artistText.Text = "Pick something below, or press play";
             SetArt(null);
             UpdateControlVisuals();
@@ -1315,6 +1341,21 @@ namespace AnikiHelper.Services.Spotify
         /// <summary>Sends a player command; if no device is active, wakes the desktop app and retries on it.</summary>
         private async Task PlayerCommandAsync(HttpMethod method, string path, JObject body)
         {
+            // Starting playback always targets the Spotify app on this PC, so it never lands
+            // on a silent device (a stale web player, a sleeping phone, etc.).
+            if (path.StartsWith("/me/player/play", StringComparison.Ordinal))
+            {
+                var pcDevice = await EnsureDesktopDeviceAsync();
+                if (pcDevice == null)
+                {
+                    ShowToast("Couldn't find Spotify on this PC. Open the Spotify app, then try again.");
+                    await RefreshPlayerSoonAsync();
+                    return;
+                }
+
+                path += (path.Contains("?") ? "&" : "?") + "device_id=" + Uri.EscapeDataString(pcDevice);
+            }
+
             var result = await api.SendAsync(method, path, body);
             if (result.Status == 404)
             {
@@ -1401,14 +1442,23 @@ namespace AnikiHelper.Services.Spotify
                 return null;
             }
 
-            var machine = Environment.MachineName;
-            var pick =
-                devices.FirstOrDefault(d => (string)d["id"] == preferredDeviceId) ??
-                devices.FirstOrDefault(d => (bool?)d["is_active"] == true) ??
-                devices.FirstOrDefault(d => string.Equals((string)d["type"], "Computer", StringComparison.OrdinalIgnoreCase) &&
-                                            string.Equals((string)d["name"], machine, StringComparison.OrdinalIgnoreCase)) ??
-                devices.FirstOrDefault(d => string.Equals((string)d["type"], "Computer", StringComparison.OrdinalIgnoreCase)) ??
-                devices.FirstOrDefault();
+            // Only the Spotify desktop app on this PC: a Computer device that isn't a web player.
+            var machine = Environment.MachineName ?? string.Empty;
+            var computers = devices
+                .Where(d => string.Equals((string)d["type"], "Computer", StringComparison.OrdinalIgnoreCase))
+                .Where(d => ((string)d["name"] ?? string.Empty).IndexOf("Web Player", StringComparison.OrdinalIgnoreCase) < 0)
+                .Where(d => (bool?)d["is_restricted"] != true)
+                .ToList();
+            Func<JToken, bool> isThisPc = d =>
+            {
+                var name = (string)d["name"] ?? string.Empty;
+                return name.Equals(machine, StringComparison.OrdinalIgnoreCase) ||
+                       name.StartsWith(machine, StringComparison.OrdinalIgnoreCase) ||
+                       (machine.Length > 0 && machine.StartsWith(name, StringComparison.OrdinalIgnoreCase) && name.Length >= 6);
+            };
+            var pick = computers.FirstOrDefault(isThisPc) ??
+                       computers.FirstOrDefault(d => (bool?)d["is_active"] == true) ??
+                       computers.FirstOrDefault();
             return (string)pick?["id"];
         }
 
@@ -1979,6 +2029,7 @@ namespace AnikiHelper.Services.Spotify
         <StackPanel Grid.Column='1' Margin='30,0,16,0' VerticalAlignment='Center'>
           <TextBlock x:Name='TitleText' FontSize='36' FontWeight='Bold' Foreground='#FFFFFF' TextTrimming='CharacterEllipsis' Text='Spotify'/>
           <TextBlock x:Name='ArtistText' FontSize='24' Foreground='#B3B3B3' TextTrimming='CharacterEllipsis' Margin='0,6,0,0'/>
+          <TextBlock x:Name='DeviceText' FontSize='17' Foreground='#1DB954' TextTrimming='CharacterEllipsis' Margin='0,6,0,0'/>
         </StackPanel>
         <Button x:Name='HeartBtn' Grid.Column='2' Style='{StaticResource IconBtn}' FontSize='34' VerticalAlignment='Center'/>
       </Grid>
