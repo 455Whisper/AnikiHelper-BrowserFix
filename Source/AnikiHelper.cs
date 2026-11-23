@@ -8,6 +8,7 @@ using AnikiHelper.Services.MediaGallery;
 using AnikiHelper.Services.AnikiThemeSettings;
 using AnikiHelper.Services.UI;
 using AnikiHelper.Services.WebBrowser;
+using AnikiHelper.Services.Spotify;
 using AnikiHelper.Services.VideoPlayer;
 using AnikiHelper.Services.EasterEgg;
 using AnikiHelper.Services.FirstSetup;
@@ -260,6 +261,7 @@ namespace AnikiHelper
         private readonly AnikiWindowManager anikiWindowManager;
         private readonly InGameOverlayService inGameOverlayService;
         private readonly AnikiWebBrowserService webBrowserService;
+        private readonly AnikiSpotifyPanelService spotifyPanelService;
         private readonly AnikiVideoPlayerService videoPlayerService;
         private Window videoLibraryManagerWindow;
         private Window videoIntroEndingManagerWindow;
@@ -8578,12 +8580,32 @@ namespace AnikiHelper
                 DebugLog($"[AnikiHelper][WebBrowserAudio] Browser open state: {isOpen}");
             };
 
+            spotifyPanelService = new AnikiSpotifyPanelService(
+                logger,
+                Path.Combine(GetPluginUserDataPath(), "Spotify"),
+                url => OpenWebBrowser(url, "Spotify"),
+                () => CloseWebBrowser());
+            spotifyPanelService.OpenStateChanged += isOpen =>
+            {
+                SetAnikiWindowOpenState(isOpen, "Spotify");
+            };
+
             inGameOverlayService = new InGameOverlayService(
                 api,
                 Settings,
                 () => anikiWindowManager?.HasOpenWindow == true,
-                () => webBrowserService?.IsControllerInputActive == true,
-                state => webBrowserService?.ProcessControllerInput(state),
+                () => spotifyPanelService?.IsOpen == true || webBrowserService?.IsControllerInputActive == true,
+                state =>
+                {
+                    if (spotifyPanelService?.IsOpen == true)
+                    {
+                        spotifyPanelService.ProcessControllerInput(state);
+                    }
+                    else
+                    {
+                        webBrowserService?.ProcessControllerInput(state);
+                    }
+                },
                 OpenQuickAccessExtraFromOverlay);
             anikiWindowManager.SetOverlayOpenStateProvider(
                 () => inGameOverlayService?.IsOverlayOpenOrOpening == true);
@@ -8694,6 +8716,7 @@ namespace AnikiHelper
                     shutdownVideoSequenceRunning ||
                     anikiWindowManager?.HasOpenWindow == true ||
                     webBrowserService?.IsControllerInputActive == true ||
+                    spotifyPanelService?.IsOpen == true ||
                     Settings?.IsWebBrowserOpen == true ||
                     Settings?.FirstSetup?.IsActive == true ||
                     inGameOverlayService?.IsOverlayOpenOrOpening == true,
@@ -16870,6 +16893,26 @@ namespace AnikiHelper
             webBrowserService?.Close();
         }
 
+        public void ToggleSpotifyPanel(object anchor)
+        {
+            try
+            {
+                Action toggle = () => spotifyPanelService?.Toggle(anchor as FrameworkElement);
+                if (spotifyPanelService?.IsOpen != true &&
+                    anikiWindowManager?.HasOpenWindow == true &&
+                    anikiWindowManager.CloseTopWindowForExternalHandoff(toggle))
+                {
+                    return;
+                }
+
+                toggle();
+            }
+            catch (Exception ex)
+            {
+                logger.Warn(ex, "[AnikiHelper] Failed to toggle the Spotify panel.");
+            }
+        }
+
         public void CloseTopWindow()
         {
             anikiWindowManager?.CloseTopWindow();
@@ -17875,6 +17918,7 @@ namespace AnikiHelper
                     // or the native Playnite Settings window may now own the transition.
                     var stillOpen = anikiWindowManager?.HasOpenWindow == true ||
                                     webBrowserService?.IsOpen == true ||
+                                    spotifyPanelService?.IsOpen == true ||
                                     IsNativeFullscreenSettingsWindowVisible();
 
                     if (stillOpen)
@@ -23362,6 +23406,7 @@ namespace AnikiHelper
                 global::AnikiHelper.AnikiLog.Debug(logger, "AnikiHelper shutdown: before webBrowserService.Dispose");
                 webBrowserService?.Dispose();
                 global::AnikiHelper.AnikiLog.Debug(logger, "AnikiHelper shutdown: after webBrowserService.Dispose");
+                try { spotifyPanelService?.Dispose(); } catch { }
             }
             catch (Exception e)
             {
