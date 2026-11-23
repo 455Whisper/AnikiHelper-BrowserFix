@@ -34,6 +34,10 @@ namespace AnikiHelper.Services.Spotify
         [DllImport("user32.dll")]
         private static extern int SetWindowLong(IntPtr hwnd, int index, int value);
 
+        private readonly string logoPath;
+        private Image brandLogo;
+        private TextBlock brandGlyph;
+        private bool logoLoaded;
         private Window window;
         private FrameworkElement card;
         private TranslateTransform slide;
@@ -58,9 +62,15 @@ namespace AnikiHelper.Services.Spotify
         private bool playing;
         private DateTime stampUtc;
 
+        public SpotifyNowPlayingToast(string logoPath)
+        {
+            this.logoPath = logoPath;
+        }
+
         public void Show(string title, string artist, string imageUrl, double progress, double duration, bool isPlaying)
         {
             EnsureWindow();
+            TryLoadLogo();
             titleWave.SetText(title ?? string.Empty);
             artistWave.SetText(artist ?? string.Empty);
             brandWave.SetText("Spotify");
@@ -185,7 +195,9 @@ namespace AnikiHelper.Services.Spotify
             progressTrack = (Grid)card.FindName("ProgressTrack");
             progressFill = (Rectangle)card.FindName("ProgressFill");
             remainingText = (TextBlock)card.FindName("RemainingText");
-            ((TextBlock)card.FindName("BrandGlyph")).Text = "";
+            brandGlyph = (TextBlock)card.FindName("BrandGlyph");
+            brandGlyph.Text = "";
+            brandLogo = (Image)card.FindName("BrandLogo");
             titleWave = new WaveText(titleText, 262, 3.4, 0.0);
             artistWave = new WaveText(artistText, 262, 2.55, 0.35);
             brandWave = new WaveText((TextBlock)card.FindName("BrandText"), 120, 2.125, 0.7);
@@ -215,6 +227,33 @@ namespace AnikiHelper.Services.Spotify
             hideTimer.Tick += (s, e) => Hide();
             progressTimer = new DispatcherTimer(DispatcherPriority.Render) { Interval = TimeSpan.FromMilliseconds(250) };
             progressTimer.Tick += (s, e) => UpdateProgress();
+        }
+
+        // Uses the user's own logo.png from the Spotify settings folder when present.
+        private void TryLoadLogo()
+        {
+            if (logoLoaded || brandLogo == null || string.IsNullOrEmpty(logoPath) || !System.IO.File.Exists(logoPath))
+            {
+                return;
+            }
+
+            try
+            {
+                var bitmap = new BitmapImage();
+                bitmap.BeginInit();
+                bitmap.UriSource = new Uri(logoPath);
+                bitmap.DecodePixelWidth = 64;
+                bitmap.CacheOption = BitmapCacheOption.OnLoad;
+                bitmap.EndInit();
+                bitmap.Freeze();
+                brandLogo.Source = bitmap;
+                brandLogo.Visibility = Visibility.Visible;
+                brandGlyph.Visibility = Visibility.Collapsed;
+                logoLoaded = true;
+            }
+            catch
+            {
+            }
         }
 
         private void MakeClickThrough()
@@ -453,6 +492,8 @@ namespace AnikiHelper.Services.Spotify
       </Border>
       <Grid Grid.Column='1' Margin='18,0,0,0'>
         <StackPanel Orientation='Horizontal' HorizontalAlignment='Right' VerticalAlignment='Top'>
+          <Image x:Name='BrandLogo' Width='20' Height='20' Margin='0,0,7,0' VerticalAlignment='Center'
+                 Visibility='Collapsed' RenderOptions.BitmapScalingMode='HighQuality'/>
           <TextBlock x:Name='BrandGlyph' FontFamily='Segoe Fluent Icons, Segoe MDL2 Assets' FontSize='18'
                      Foreground='#FFFFFF' VerticalAlignment='Center' Margin='0,0,7,0'/>
           <TextBlock x:Name='BrandText' Text='Spotify' FontSize='17' FontWeight='SemiBold' Foreground='#FFFFFF' VerticalAlignment='Center'/>

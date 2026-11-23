@@ -59,7 +59,7 @@ namespace AnikiHelper.Services.Spotify
         private readonly Action<string> openInBrowser;
         private readonly Action closeBrowser;
         private readonly Func<bool> canShowNowPlaying;
-        private readonly SpotifyNowPlayingToast nowPlayingToast = new SpotifyNowPlayingToast();
+        private readonly SpotifyNowPlayingToast nowPlayingToast;
         private DispatcherTimer watchTimer;
         private bool watching;
         private string watchedTrackUri;
@@ -141,6 +141,7 @@ namespace AnikiHelper.Services.Spotify
             this.closeBrowser = closeBrowser;
             this.canShowNowPlaying = canShowNowPlaying;
             api = new SpotifyApiClient(logger, dataDirectory);
+            nowPlayingToast = new SpotifyNowPlayingToast(System.IO.Path.Combine(dataDirectory, "logo.png"));
             RunOnUi(StartNowPlayingWatcher);
         }
 
