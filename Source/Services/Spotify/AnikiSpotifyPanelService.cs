@@ -476,7 +476,7 @@ namespace AnikiHelper.Services.Spotify
 
             if (mixer == null)
             {
-                mixer = new AudioMixerSource(logger);
+                mixer = new AudioMixerSource(logger, api.DataDirectory);
             }
 
             sidePanel.Visibility = Visibility.Visible;
@@ -507,6 +507,24 @@ namespace AnikiHelper.Services.Spotify
             }
         }
 
+        private void SelectOutputDevice(AudioEntry entry)
+        {
+            if (entry == null || entry.SliderEnabled || string.IsNullOrEmpty(entry.DeviceId))
+            {
+                return;
+            }
+
+            if (mixer.SwitchOutputTo(entry.DeviceId))
+            {
+                LoadSideList();
+                ShowToast("Sound now plays on " + entry.Name);
+            }
+            else
+            {
+                ShowToast("Windows wouldn't switch to that device.");
+            }
+        }
+
         private void SwitchTab()
         {
             showingMixer = !showingMixer;
@@ -520,6 +538,12 @@ namespace AnikiHelper.Services.Spotify
             var entries = showingMixer ? mixer.GetApps() : mixer.GetDevices();
             foreach (var entry in entries)
             {
+                if (entry.IsSelectable)
+                {
+                    var picked = entry;
+                    entry.Select = new RelayCommand(() => SelectOutputDevice(picked));
+                }
+
                 audioEntries.Add(entry);
             }
 
@@ -649,6 +673,39 @@ namespace AnikiHelper.Services.Spotify
                 <Setter TargetName='Frame' Property='BorderBrush' Value='#1DB954'/>
                 <Setter TargetName='Frame' Property='Background' Value='#1FFFFFFF'/>
               </Trigger>
+              <Trigger Property='IsEnabled' Value='False'>
+                <Setter TargetName='Frame' Property='Opacity' Value='0.3'/>
+              </Trigger>
+            </ControlTemplate.Triggers>
+          </ControlTemplate>
+        </Setter.Value>
+      </Setter>
+    </Style>
+    <Style x:Key='DeviceNameBtn' TargetType='Button'>
+      <Setter Property='Foreground' Value='#FFFFFF'/>
+      <Setter Property='FontSize' Value='21'/>
+      <Setter Property='HorizontalAlignment' Value='Center'/>
+      <Setter Property='Cursor' Value='Hand'/>
+      <Setter Property='FocusVisualStyle' Value='{x:Null}'/>
+      <Setter Property='Template'>
+        <Setter.Value>
+          <ControlTemplate TargetType='Button'>
+            <Border x:Name='Bd' Background='Transparent' CornerRadius='10' BorderThickness='2'
+                    BorderBrush='Transparent' Padding='12,3'>
+              <ContentPresenter HorizontalAlignment='Center' VerticalAlignment='Center'/>
+            </Border>
+            <ControlTemplate.Triggers>
+              <MultiTrigger>
+                <MultiTrigger.Conditions>
+                  <Condition Property='IsMouseOver' Value='True'/>
+                  <Condition Property='IsEnabled' Value='True'/>
+                </MultiTrigger.Conditions>
+                <Setter TargetName='Bd' Property='Background' Value='#1FFFFFFF'/>
+              </MultiTrigger>
+              <Trigger Property='IsKeyboardFocused' Value='True'>
+                <Setter TargetName='Bd' Property='Background' Value='#2EFFFFFF'/>
+                <Setter TargetName='Bd' Property='BorderBrush' Value='#1DB954'/>
+              </Trigger>
             </ControlTemplate.Triggers>
           </ControlTemplate>
         </Setter.Value>
@@ -680,8 +737,10 @@ namespace AnikiHelper.Services.Spotify
     </Style>
     <DataTemplate x:Key='AudioRow'>
       <StackPanel Margin='0,6,0,12'>
-        <TextBlock Text='{Binding Name}' FontSize='21' Foreground='#FFFFFF' HorizontalAlignment='Center'
-                   TextTrimming='CharacterEllipsis' Margin='8,0'/>
+        <Button Style='{StaticResource DeviceNameBtn}' Command='{Binding Select}'
+                IsEnabled='{Binding IsSelectable}'>
+          <TextBlock Text='{Binding Name}' TextTrimming='CharacterEllipsis'/>
+        </Button>
         <Grid Margin='0,6,0,0'>
           <Grid.ColumnDefinitions>
             <ColumnDefinition Width='Auto'/>
@@ -691,6 +750,7 @@ namespace AnikiHelper.Services.Spotify
           <TextBlock Text='&#xE767;' FontFamily='Segoe Fluent Icons, Segoe MDL2 Assets' FontSize='20'
                      Foreground='#7FB8FF' VerticalAlignment='Center' Margin='4,0,0,0'/>
           <Slider Grid.Column='1' Margin='6,0' Style='{StaticResource VolumeSlider}'
+                  IsEnabled='{Binding SliderEnabled}'
                   Value='{Binding Volume, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}'/>
           <TextBlock Grid.Column='2' Text='{Binding Percent}' FontSize='17' Foreground='#CFCFCF'
                      VerticalAlignment='Center' TextAlignment='Right'/>

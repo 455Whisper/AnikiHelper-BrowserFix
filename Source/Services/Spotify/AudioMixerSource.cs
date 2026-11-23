@@ -16,12 +16,31 @@ namespace AnikiHelper.Services.Spotify
         private double volume;
         private bool updatingFromSystem;
 
+        private bool sliderEnabled = true;
+
         public AudioEntry(string key, string name, float initial, Action<float> apply)
         {
             Key = key;
             Name = name;
             this.apply = apply;
             volume = Math.Round(initial * 100);
+        }
+
+        /// <summary>Devices can be picked as the output; apps cannot.</summary>
+        public bool IsSelectable { get; set; }
+
+        public string DeviceId { get; set; }
+
+        public System.Windows.Input.ICommand Select { get; set; }
+
+        public bool SliderEnabled
+        {
+            get { return sliderEnabled; }
+            set
+            {
+                sliderEnabled = value;
+                Raise("SliderEnabled");
+            }
         }
 
         public event PropertyChangedEventHandler PropertyChanged;
@@ -80,11 +99,108 @@ namespace AnikiHelper.Services.Spotify
     internal sealed class AudioMixerSource
     {
         private readonly ILogger logger;
+        private readonly string volumesFile;
         private readonly Dictionary<string, Func<float>> readers = new Dictionary<string, Func<float>>();
+        private Dictionary<string, float> rememberedVolumes;
 
-        public AudioMixerSource(ILogger logger)
+        public AudioMixerSource(ILogger logger, string dataDirectory)
         {
             this.logger = logger;
+            volumesFile = System.IO.Path.Combine(dataDirectory ?? string.Empty, "device_volumes.json");
+        }
+
+        private Dictionary<string, float> Remembered
+        {
+            get
+            {
+                if (rememberedVolumes == null)
+                {
+                    try
+                    {
+                        rememberedVolumes = System.IO.File.Exists(volumesFile)
+                            ? Newtonsoft.Json.JsonConvert.DeserializeObject<Dictionary<string, float>>(System.IO.File.ReadAllText(volumesFile))
+                            : null;
+                    }
+                    catch
+                    {
+                        rememberedVolumes = null;
+                    }
+
+                    rememberedVolumes = rememberedVolumes ?? new Dictionary<string, float>();
+                }
+
+                return rememberedVolumes;
+            }
+        }
+
+        private void SaveRemembered()
+        {
+            try
+            {
+                System.IO.File.WriteAllText(volumesFile, Newtonsoft.Json.JsonConvert.SerializeObject(Remembered));
+            }
+            catch
+            {
+            }
+        }
+
+        /// <summary>
+        /// Makes the device the Windows output for all sounds. The previous output is set to
+        /// zero (its volume is remembered), and the new one gets back its remembered volume.
+        /// </summary>
+        public bool SwitchOutputTo(string deviceId)
+        {
+            try
+            {
+                var enumerator = new MMDeviceEnumerator();
+                MMDevice previous = null;
+                try { previous = enumerator.GetDefaultAudioEndpoint(DataFlow.Render, Role.Multimedia); } catch { }
+                if (previous != null && previous.ID == deviceId)
+                {
+                    return true;
+                }
+
+                var target = enumerator.GetDevice(deviceId);
+                if (target == null)
+                {
+                    return false;
+                }
+
+                if (!PolicyConfig.SetDefault(deviceId))
+                {
+                    logger?.Warn("[AnikiHelper][Audio] Windows refused to change the default output device.");
+                    return false;
+                }
+
+                if (previous != null)
+                {
+                    var previousVolume = previous.AudioEndpointVolume.MasterVolumeLevelScalar;
+                    if (previousVolume > 0.01f)
+                    {
+                        Remembered[previous.ID] = previousVolume;
+                    }
+
+                    previous.AudioEndpointVolume.MasterVolumeLevelScalar = 0f;
+                }
+
+                float restore;
+                if (Remembered.TryGetValue(deviceId, out restore) && restore > 0.01f)
+                {
+                    target.AudioEndpointVolume.MasterVolumeLevelScalar = restore;
+                }
+                else if (target.AudioEndpointVolume.MasterVolumeLevelScalar < 0.05f)
+                {
+                    target.AudioEndpointVolume.MasterVolumeLevelScalar = 0.5f;
+                }
+
+                SaveRemembered();
+                return true;
+            }
+            catch (Exception ex)
+            {
+                logger?.Warn(ex, "[AnikiHelper][Audio] Could not switch the output device.");
+                return false;
+            }
         }
 
         public List<AudioEntry> GetDevices()
@@ -106,20 +222,34 @@ namespace AnikiHelper.Services.Spotify
                 foreach (var device in enumerator.EnumerateAudioEndPoints(DataFlow.Render, DeviceState.Active))
                 {
                     var endpoint = device.AudioEndpointVolume;
-                    var name = device.FriendlyName;
-                    if (device.ID == defaultId)
+                    var inUse = device.ID == defaultId;
+                    var name = device.FriendlyName + (inUse ? "  \u2022  In use" : string.Empty);
+                    var key = "device:" + device.ID;
+                    if (inUse)
                     {
-                        name += "  •  Default";
+                        readers[key] = () => endpoint.MasterVolumeLevelScalar;
                     }
 
-                    var key = "device:" + device.ID;
-                    readers[key] = () => endpoint.MasterVolumeLevelScalar;
                     result.Add(new AudioEntry(
                         key,
                         name,
-                        endpoint.MasterVolumeLevelScalar,
-                        v => endpoint.MasterVolumeLevelScalar = v));
+                        inUse ? endpoint.MasterVolumeLevelScalar : 0f,
+                        v =>
+                        {
+                            if (inUse)
+                            {
+                                endpoint.MasterVolumeLevelScalar = v;
+                            }
+                        })
+                    {
+                        IsSelectable = true,
+                        DeviceId = device.ID,
+                        SliderEnabled = inUse
+                    });
                 }
+
+                // The device in use first.
+                result = result.OrderByDescending(e => e.SliderEnabled).ToList();
             }
             catch (Exception ex)
             {
@@ -243,6 +373,62 @@ namespace AnikiHelper.Services.Spotify
             catch
             {
                 return string.IsNullOrWhiteSpace(fallback) ? null : fallback;
+            }
+        }
+    }
+
+    internal static class PolicyConfig
+    {
+        [System.Runtime.InteropServices.ComImport]
+        [System.Runtime.InteropServices.Guid("870af99c-171d-4f9e-af0d-e63df40c2bc9")]
+        private class CPolicyConfigClient
+        {
+        }
+
+        [System.Runtime.InteropServices.Guid("f8679f50-850a-41cf-9c72-430f290290c8")]
+        [System.Runtime.InteropServices.InterfaceType(System.Runtime.InteropServices.ComInterfaceType.InterfaceIsIUnknown)]
+        private interface IPolicyConfig
+        {
+            [System.Runtime.InteropServices.PreserveSig] int GetMixFormat([System.Runtime.InteropServices.MarshalAs(System.Runtime.InteropServices.UnmanagedType.LPWStr)] string id, IntPtr format);
+            [System.Runtime.InteropServices.PreserveSig] int GetDeviceFormat([System.Runtime.InteropServices.MarshalAs(System.Runtime.InteropServices.UnmanagedType.LPWStr)] string id, bool defaultFormat, IntPtr format);
+            [System.Runtime.InteropServices.PreserveSig] int ResetDeviceFormat([System.Runtime.InteropServices.MarshalAs(System.Runtime.InteropServices.UnmanagedType.LPWStr)] string id);
+            [System.Runtime.InteropServices.PreserveSig] int SetDeviceFormat([System.Runtime.InteropServices.MarshalAs(System.Runtime.InteropServices.UnmanagedType.LPWStr)] string id, IntPtr endpointFormat, IntPtr mixFormat);
+            [System.Runtime.InteropServices.PreserveSig] int GetProcessingPeriod([System.Runtime.InteropServices.MarshalAs(System.Runtime.InteropServices.UnmanagedType.LPWStr)] string id, bool defaultPeriod, IntPtr defaultPeriodOut, IntPtr minimumPeriod);
+            [System.Runtime.InteropServices.PreserveSig] int SetProcessingPeriod([System.Runtime.InteropServices.MarshalAs(System.Runtime.InteropServices.UnmanagedType.LPWStr)] string id, IntPtr period);
+            [System.Runtime.InteropServices.PreserveSig] int GetShareMode([System.Runtime.InteropServices.MarshalAs(System.Runtime.InteropServices.UnmanagedType.LPWStr)] string id, IntPtr mode);
+            [System.Runtime.InteropServices.PreserveSig] int SetShareMode([System.Runtime.InteropServices.MarshalAs(System.Runtime.InteropServices.UnmanagedType.LPWStr)] string id, IntPtr mode);
+            [System.Runtime.InteropServices.PreserveSig] int GetPropertyValue([System.Runtime.InteropServices.MarshalAs(System.Runtime.InteropServices.UnmanagedType.LPWStr)] string id, IntPtr key, IntPtr value);
+            [System.Runtime.InteropServices.PreserveSig] int SetPropertyValue([System.Runtime.InteropServices.MarshalAs(System.Runtime.InteropServices.UnmanagedType.LPWStr)] string id, IntPtr key, IntPtr value);
+            [System.Runtime.InteropServices.PreserveSig] int SetDefaultEndpoint([System.Runtime.InteropServices.MarshalAs(System.Runtime.InteropServices.UnmanagedType.LPWStr)] string id, int role);
+            [System.Runtime.InteropServices.PreserveSig] int SetEndpointVisibility([System.Runtime.InteropServices.MarshalAs(System.Runtime.InteropServices.UnmanagedType.LPWStr)] string id, bool visible);
+        }
+
+        /// <summary>Sets the device as default for console, multimedia and communications.</summary>
+        public static bool SetDefault(string deviceId)
+        {
+            object client = null;
+            try
+            {
+                client = new CPolicyConfigClient();
+                var config = (IPolicyConfig)client;
+                var ok = true;
+                for (var role = 0; role <= 2; role++)
+                {
+                    ok &= config.SetDefaultEndpoint(deviceId, role) >= 0;
+                }
+
+                return ok;
+            }
+            catch
+            {
+                return false;
+            }
+            finally
+            {
+                if (client != null)
+                {
+                    try { System.Runtime.InteropServices.Marshal.ReleaseComObject(client); } catch { }
+                }
             }
         }
     }
