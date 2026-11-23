@@ -1663,12 +1663,15 @@ namespace AnikiHelper.Services.Spotify
             // Left stick: menu navigation with repeat. Right stick: scroll the lists.
             var lx = state.LeftX / 32767.0;
             var ly = state.LeftY / 32767.0;
+            // Hysteresis: a direction engages past 0.65 and only releases below 0.35,
+            // so the stick can't flicker between "pushed" and "released" at the edge.
+            var engage = lastStickDirection == 0 ? 0.65 : 0.35;
             var direction = 0;
-            if (Math.Abs(ly) > 0.55 && Math.Abs(ly) >= Math.Abs(lx))
+            if (Math.Abs(ly) > engage && Math.Abs(ly) >= Math.Abs(lx))
             {
                 direction = ly > 0 ? 2 : 1;
             }
-            else if (Math.Abs(lx) > 0.55)
+            else if (Math.Abs(lx) > engage)
             {
                 direction = lx > 0 ? 4 : 3;
             }
@@ -1682,7 +1685,8 @@ namespace AnikiHelper.Services.Spotify
             {
                 var first = direction != lastStickDirection;
                 lastStickDirection = direction;
-                nextStickNavUtc = now.AddMilliseconds(first ? 320 : 120);
+                // One step per push; holding repeats after a pause, at a readable pace.
+                nextStickNavUtc = now.AddMilliseconds(first ? 500 : 220);
                 Move(direction == 1 ? FocusNavigationDirection.Up
                     : direction == 2 ? FocusNavigationDirection.Down
                     : direction == 3 ? FocusNavigationDirection.Left
@@ -1699,8 +1703,21 @@ namespace AnikiHelper.Services.Spotify
             }
         }
 
+        private FocusNavigationDirection lastMoveDirection;
+        private DateTime lastMoveUtc = DateTime.MinValue;
+
         private void Move(FocusNavigationDirection direction)
         {
+            // The same press can arrive from two input sources a few ms apart; count it once.
+            var now = DateTime.UtcNow;
+            if (direction == lastMoveDirection && (now - lastMoveUtc).TotalMilliseconds < 150)
+            {
+                return;
+            }
+
+            lastMoveDirection = direction;
+            lastMoveUtc = now;
+
             if (!window.IsActive)
             {
                 window.Activate();
