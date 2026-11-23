@@ -64,7 +64,7 @@ namespace AnikiHelper.Services.Spotify
 
             var image = Load(imageUrl, 300);
             art.Source = image;
-            backgroundArt.Source = image;
+            backgroundArt.Source = (ImageSource)image ?? AnikiSpotifyPanelService.GetDefaultBackground();
 
             Position();
             UpdateProgress();

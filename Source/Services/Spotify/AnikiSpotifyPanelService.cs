@@ -77,6 +77,9 @@ namespace AnikiHelper.Services.Spotify
         private Button setupPrimary;
         private Button setupSecondary;
         private Image art;
+        private Image backgroundArt;
+        private Grid backgroundHost;
+        private static ImageSource defaultBackground;
         private TextBlock titleText;
         private TextBlock artistText;
         private Button heartButton;
@@ -406,6 +409,16 @@ namespace AnikiHelper.Services.Spotify
             setupPrimary = (Button)root.FindName("SetupPrimary");
             setupSecondary = (Button)root.FindName("SetupSecondary");
             art = (Image)root.FindName("Art");
+            backgroundArt = (Image)root.FindName("BgArt");
+            backgroundHost = (Grid)root.FindName("BgHost");
+            backgroundArt.Source = GetDefaultBackground();
+            root.SizeChanged += (s, e) =>
+            {
+                // Round only the bottom corners: push the top ones above the panel.
+                var w = e.NewSize.Width;
+                var h = e.NewSize.Height;
+                backgroundHost.Clip = new RectangleGeometry(new Rect(0, -24, w, h + 24), 20, 20);
+            };
             titleText = (TextBlock)root.FindName("TitleText");
             artistText = (TextBlock)root.FindName("ArtistText");
             heartButton = (Button)root.FindName("HeartBtn");
@@ -784,6 +797,7 @@ namespace AnikiHelper.Services.Spotify
             if (string.IsNullOrEmpty(url))
             {
                 art.Source = null;
+                CrossfadeBackground(GetDefaultBackground());
                 return;
             }
 
@@ -796,11 +810,59 @@ namespace AnikiHelper.Services.Spotify
                 bitmap.CacheOption = BitmapCacheOption.OnLoad;
                 bitmap.EndInit();
                 art.Source = bitmap;
+                CrossfadeBackground(bitmap);
             }
             catch
             {
                 art.Source = null;
+                CrossfadeBackground(GetDefaultBackground());
             }
+        }
+
+        private void CrossfadeBackground(ImageSource source)
+        {
+            if (backgroundArt == null || ReferenceEquals(backgroundArt.Source, source))
+            {
+                return;
+            }
+
+            var fadeOut = new DoubleAnimation(1, 0.35, TimeSpan.FromMilliseconds(220));
+            fadeOut.Completed += (s, e) =>
+            {
+                backgroundArt.Source = source;
+                backgroundArt.BeginAnimation(UIElement.OpacityProperty, new DoubleAnimation(0.35, 1, TimeSpan.FromMilliseconds(420)));
+            };
+            backgroundArt.BeginAnimation(UIElement.OpacityProperty, fadeOut);
+        }
+
+        internal static ImageSource GetDefaultBackground()
+        {
+            if (defaultBackground != null)
+            {
+                return defaultBackground;
+            }
+
+            try
+            {
+                var path = System.IO.Path.Combine(
+                    System.IO.Path.GetDirectoryName(typeof(AnikiSpotifyPanelService).Assembly.Location) ?? string.Empty,
+                    "Assets", "Spotify", "default_bg.png");
+                if (System.IO.File.Exists(path))
+                {
+                    var bitmap = new BitmapImage();
+                    bitmap.BeginInit();
+                    bitmap.UriSource = new Uri(path);
+                    bitmap.CacheOption = BitmapCacheOption.OnLoad;
+                    bitmap.EndInit();
+                    bitmap.Freeze();
+                    defaultBackground = bitmap;
+                }
+            }
+            catch
+            {
+            }
+
+            return defaultBackground;
         }
 
         private async Task RefreshLikedAsync()
@@ -1428,7 +1490,7 @@ namespace AnikiHelper.Services.Spotify
         private const string PanelXaml = @"
 <Border xmlns='http://schemas.microsoft.com/winfx/2006/xaml/presentation'
         xmlns:x='http://schemas.microsoft.com/winfx/2006/xaml'
-        x:Name='Root' Background='#F7181818' CornerRadius='0,0,20,20'
+        x:Name='Root' Background='#FF141414' CornerRadius='0,0,20,20'
         BorderBrush='#26FFFFFF' BorderThickness='1,0,1,1'
         TextElement.FontFamily='Segoe UI Variable Display, Segoe UI'
         KeyboardNavigation.DirectionalNavigation='Contained'
@@ -1545,7 +1607,19 @@ namespace AnikiHelper.Services.Spotify
     </DataTemplate>
   </Border.Resources>
 
-  <Grid>
+  <Grid x:Name='RootGrid'>
+    <Grid x:Name='BgHost' IsHitTestVisible='False'>
+      <Image x:Name='BgArt' Stretch='UniformToFill' RenderTransformOrigin='0.5,0.5'
+             RenderOptions.BitmapScalingMode='LowQuality'>
+        <Image.RenderTransform>
+          <ScaleTransform ScaleX='1.8' ScaleY='1.8'/>
+        </Image.RenderTransform>
+        <Image.Effect>
+          <BlurEffect Radius='90' KernelType='Gaussian' RenderingBias='Performance'/>
+        </Image.Effect>
+      </Image>
+      <Border Background='#73000000'/>
+    </Grid>
     <Grid x:Name='MainView'>
       <Grid.RowDefinitions>
         <RowDefinition Height='Auto'/>
