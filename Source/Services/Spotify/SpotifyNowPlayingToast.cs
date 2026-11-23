@@ -492,7 +492,7 @@ namespace AnikiHelper.Services.Spotify
       </Border>
       <Grid Grid.Column='1' Margin='18,0,0,0'>
         <StackPanel Orientation='Horizontal' HorizontalAlignment='Right' VerticalAlignment='Top'>
-          <Image x:Name='BrandLogo' Width='20' Height='20' Margin='0,0,7,0' VerticalAlignment='Center'
+          <Image x:Name='BrandLogo' Width='20' Height='20' Margin='0,0,4,0' VerticalAlignment='Center'
                  Visibility='Collapsed' RenderOptions.BitmapScalingMode='HighQuality'/>
           <TextBlock x:Name='BrandGlyph' FontFamily='Segoe Fluent Icons, Segoe MDL2 Assets' FontSize='18'
                      Foreground='#FFFFFF' VerticalAlignment='Center' Margin='0,0,7,0'/>
