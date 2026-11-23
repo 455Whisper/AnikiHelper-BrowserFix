@@ -1,4 +1,5 @@
 using NAudio.CoreAudioApi;
+using NAudio.CoreAudioApi.Interfaces;
 using Playnite.SDK;
 using System;
 using System.Collections.Generic;
