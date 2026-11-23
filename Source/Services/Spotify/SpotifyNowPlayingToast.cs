@@ -186,10 +186,10 @@ namespace AnikiHelper.Services.Spotify
             progressFill = (Rectangle)card.FindName("ProgressFill");
             remainingText = (TextBlock)card.FindName("RemainingText");
             ((TextBlock)card.FindName("BrandGlyph")).Text = "";
-            titleWave = new WaveText(titleText, 262, 4.0, 0.0);
-            artistWave = new WaveText(artistText, 262, 3.0, 0.35);
-            brandWave = new WaveText((TextBlock)card.FindName("BrandText"), 120, 2.5, 0.7);
-            remainingWave = new WaveText(remainingText, 80, 2.0, 1.05);
+            titleWave = new WaveText(titleText, 262, 3.4, 0.0);
+            artistWave = new WaveText(artistText, 262, 2.55, 0.35);
+            brandWave = new WaveText((TextBlock)card.FindName("BrandText"), 120, 2.125, 0.7);
+            remainingWave = new WaveText(remainingText, 80, 1.7, 1.05);
 
             var clipHost = (FrameworkElement)card.FindName("ClipHost");
             clipHost.Clip = new RectangleGeometry(new Rect(0, 0, CardWidth, CardHeight), 18, 18);
@@ -380,7 +380,7 @@ namespace AnikiHelper.Services.Spotify
                     var group = (TransformGroup)letter.RenderTransform;
                     var phase = omega * seconds - (i * PhaseStep) - phaseOffset;
                     ((TranslateTransform)group.Children[1]).Y = -amplitude * Math.Sin(phase);
-                    ((RotateTransform)group.Children[0]).Angle = 4.0 * Math.Cos(phase);
+                    ((RotateTransform)group.Children[0]).Angle = 3.4 * Math.Cos(phase);
                 }
             }
 
