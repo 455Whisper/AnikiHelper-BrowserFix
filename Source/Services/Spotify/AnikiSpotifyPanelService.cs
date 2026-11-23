@@ -1957,15 +1957,15 @@ namespace AnikiHelper.Services.Spotify
       <Border Background='#73000000'/>
     </Grid>
     <Grid x:Name='MainView'>
-      <Button x:Name='SideToggleBtn' Grid.RowSpan='4' Panel.ZIndex='5' Style='{StaticResource IconBtn}'
-              Width='46' Height='96' FontSize='24' Foreground='#FFFFFF'
-              HorizontalAlignment='Right' VerticalAlignment='Center' Margin='0,0,4,0'/>
       <Grid.RowDefinitions>
         <RowDefinition Height='Auto'/>
         <RowDefinition Height='Auto'/>
         <RowDefinition Height='Auto'/>
         <RowDefinition Height='*'/>
       </Grid.RowDefinitions>
+      <Button x:Name='SideToggleBtn' Grid.RowSpan='4' Panel.ZIndex='5' Style='{StaticResource IconBtn}'
+              Width='46' Height='96' FontSize='24' Foreground='#FFFFFF'
+              HorizontalAlignment='Right' VerticalAlignment='Center' Margin='0,0,4,0'/>
 
       <Grid Grid.Row='0' Margin='40,36,32,0'>
         <Grid.ColumnDefinitions>
