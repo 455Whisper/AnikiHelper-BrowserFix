@@ -365,20 +365,8 @@ namespace AnikiHelper.Services.Spotify
             {
             }
 
+            // Always centred horizontally on the screen, dropping down from the top edge.
             var centerX = screenLeft + screenWidth / 2;
-            try
-            {
-                if (anchor != null && anchor.IsVisible && PresentationSource.FromVisual(anchor) != null)
-                {
-                    var source = PresentationSource.FromVisual(anchor);
-                    var toDip = source.CompositionTarget.TransformFromDevice;
-                    var center = anchor.PointToScreen(new Point(anchor.ActualWidth / 2, anchor.ActualHeight / 2));
-                    centerX = toDip.Transform(center).X;
-                }
-            }
-            catch
-            {
-            }
 
             var width = Math.Min(PanelWidth, screenWidth - 40);
             var height = Math.Min(Math.Max(560, screenHeight * 0.82), 1000);
