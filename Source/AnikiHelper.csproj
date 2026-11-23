@@ -139,6 +139,7 @@
     <Compile Include="Services\WebBrowser\AnikiWebBrowserService.cs" />
     <Compile Include="Services\Spotify\SpotifyApiClient.cs" />
     <Compile Include="Services\Spotify\AnikiSpotifyPanelService.cs" />
+    <Compile Include="Services\Spotify\SpotifyNowPlayingToast.cs" />
     <Compile Include="Services\UI\AnikiWindowManager.cs" />
     <Compile Include="Services\Controller\AnikiControllerCommandsControl.cs" />
     <Compile Include="Services\Controller\AnikiControllerInput.cs" />

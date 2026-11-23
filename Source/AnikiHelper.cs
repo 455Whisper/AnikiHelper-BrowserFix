@@ -8584,7 +8584,15 @@ namespace AnikiHelper
                 logger,
                 Path.Combine(GetPluginUserDataPath(), "Spotify"),
                 url => OpenWebBrowser(url, "Spotify"),
-                () => CloseWebBrowser());
+                () => CloseWebBrowser(),
+                () =>
+                    IsPlayniteForegroundWindow() &&
+                    Application.Current?.MainWindow?.IsActive == true &&
+                    !IsAnyPlayniteGameRunningOrLaunching() &&
+                    webBrowserService?.IsOpen != true &&
+                    anikiWindowManager?.HasOpenWindow != true &&
+                    inGameOverlayService?.IsOverlayOpenOrOpening != true &&
+                    Settings?.IsAnikiWindowOpen != true);
             spotifyPanelService.OpenStateChanged += isOpen =>
             {
                 SetAnikiWindowOpenState(isOpen, "Spotify");

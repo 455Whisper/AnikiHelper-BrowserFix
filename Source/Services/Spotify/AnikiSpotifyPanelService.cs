@@ -58,6 +58,12 @@ namespace AnikiHelper.Services.Spotify
         private readonly SpotifyApiClient api;
         private readonly Action<string> openInBrowser;
         private readonly Action closeBrowser;
+        private readonly Func<bool> canShowNowPlaying;
+        private readonly SpotifyNowPlayingToast nowPlayingToast = new SpotifyNowPlayingToast();
+        private DispatcherTimer watchTimer;
+        private bool watching;
+        private string watchedTrackUri;
+        private bool watchBaselineSet;
         private readonly ObservableCollection<SpotifyListItem> recentItems = new ObservableCollection<SpotifyListItem>();
         private readonly ObservableCollection<SpotifyListItem> playlistItems = new ObservableCollection<SpotifyListItem>();
 
@@ -124,12 +130,104 @@ namespace AnikiHelper.Services.Spotify
             ILogger logger,
             string dataDirectory,
             Action<string> openInBrowser,
-            Action closeBrowser)
+            Action closeBrowser,
+            Func<bool> canShowNowPlaying)
         {
             this.logger = logger;
             this.openInBrowser = openInBrowser;
             this.closeBrowser = closeBrowser;
+            this.canShowNowPlaying = canShowNowPlaying;
             api = new SpotifyApiClient(logger, dataDirectory);
+            RunOnUi(StartNowPlayingWatcher);
+        }
+
+        // ======================= song-change card =======================
+
+        private void StartNowPlayingWatcher()
+        {
+            if (watchTimer != null)
+            {
+                return;
+            }
+
+            watchTimer = new DispatcherTimer(DispatcherPriority.Background) { Interval = TimeSpan.FromSeconds(3) };
+            watchTimer.Tick += async (s, e) => await WatchNowPlayingAsync();
+            watchTimer.Start();
+        }
+
+        private async Task WatchNowPlayingAsync()
+        {
+            if (watching)
+            {
+                return;
+            }
+
+            var allowed = false;
+            try
+            {
+                allowed = !IsOpen && !signingIn && api.IsSignedIn && canShowNowPlaying?.Invoke() == true;
+            }
+            catch
+            {
+            }
+
+            if (!allowed)
+            {
+                // Changes that happen elsewhere (in a game, the browser, this panel) are not announced later.
+                watchBaselineSet = false;
+                nowPlayingToast.HideImmediately();
+                return;
+            }
+
+            watching = true;
+            try
+            {
+                var result = await api.SendAsync(HttpMethod.Get, "/me/player/currently-playing?additional_types=episode");
+                var body = result.Body as JObject;
+                var item = body?["item"] as JObject;
+                var uri = (string)item?["uri"];
+                var playingNow = (bool?)body?["is_playing"] ?? false;
+
+                if (!watchBaselineSet)
+                {
+                    watchBaselineSet = true;
+                    watchedTrackUri = uri;
+                    return;
+                }
+
+                if (string.IsNullOrEmpty(uri) || uri == watchedTrackUri)
+                {
+                    return;
+                }
+
+                watchedTrackUri = uri;
+                if (!playingNow || canShowNowPlaying?.Invoke() != true || IsOpen)
+                {
+                    return;
+                }
+
+                var artists = item["artists"] as JArray;
+                var artist = artists != null
+                    ? string.Join(", ", artists.Select(a => (string)a["name"]).Where(n => !string.IsNullOrEmpty(n)))
+                    : (string)item["show"]?["name"];
+                var images = (item["album"]?["images"] ?? item["images"] ?? item["show"]?["images"]) as JArray;
+
+                nowPlayingToast.Show(
+                    (string)item["name"],
+                    artist,
+                    PickImage(images, 300),
+                    (double?)body["progress_ms"] ?? 0,
+                    (double?)item["duration_ms"] ?? 0,
+                    playingNow);
+            }
+            catch (Exception ex)
+            {
+                logger?.Warn(ex, "[AnikiHelper][Spotify] Now playing check failed.");
+            }
+            finally
+            {
+                watching = false;
+            }
         }
 
         public event Action<bool> OpenStateChanged;
