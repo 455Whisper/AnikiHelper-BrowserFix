@@ -44,6 +44,12 @@ namespace AnikiHelper.Services.Spotify
         private Grid progressTrack;
         private Rectangle progressFill;
         private TextBlock remainingText;
+        private WaveText titleWave;
+        private WaveText artistWave;
+        private WaveText brandWave;
+        private WaveText remainingWave;
+        private bool waving;
+        private readonly System.Diagnostics.Stopwatch waveClock = System.Diagnostics.Stopwatch.StartNew();
         private DispatcherTimer hideTimer;
         private DispatcherTimer progressTimer;
 
@@ -55,8 +61,9 @@ namespace AnikiHelper.Services.Spotify
         public void Show(string title, string artist, string imageUrl, double progress, double duration, bool isPlaying)
         {
             EnsureWindow();
-            titleText.Text = title ?? string.Empty;
-            artistText.Text = artist ?? string.Empty;
+            titleWave.SetText(title ?? string.Empty);
+            artistWave.SetText(artist ?? string.Empty);
+            brandWave.SetText("Spotify");
             progressMs = progress;
             durationMs = duration;
             playing = isPlaying;
@@ -86,8 +93,40 @@ namespace AnikiHelper.Services.Spotify
             }
 
             progressTimer.Start();
+            StartWave();
             hideTimer.Stop();
             hideTimer.Start();
+        }
+
+        private void StartWave()
+        {
+            if (waving)
+            {
+                return;
+            }
+
+            waving = true;
+            CompositionTarget.Rendering += OnRendering;
+        }
+
+        private void StopWave()
+        {
+            if (!waving)
+            {
+                return;
+            }
+
+            waving = false;
+            CompositionTarget.Rendering -= OnRendering;
+        }
+
+        private void OnRendering(object sender, EventArgs e)
+        {
+            var t = waveClock.Elapsed.TotalSeconds;
+            titleWave.Animate(t);
+            artistWave.Animate(t);
+            brandWave.Animate(t);
+            remainingWave.Animate(t);
         }
 
         public void Hide()
@@ -104,6 +143,7 @@ namespace AnikiHelper.Services.Spotify
                 if (card.Opacity <= 0.01)
                 {
                     progressTimer.Stop();
+                    StopWave();
                     window.Hide();
                 }
             };
@@ -123,6 +163,7 @@ namespace AnikiHelper.Services.Spotify
 
             hideTimer.Stop();
             progressTimer.Stop();
+            StopWave();
             card.BeginAnimation(UIElement.OpacityProperty, null);
             card.Opacity = 0;
             window.Hide();
@@ -145,6 +186,10 @@ namespace AnikiHelper.Services.Spotify
             progressFill = (Rectangle)card.FindName("ProgressFill");
             remainingText = (TextBlock)card.FindName("RemainingText");
             ((TextBlock)card.FindName("BrandGlyph")).Text = "";
+            titleWave = new WaveText(titleText, 262, 4.0, 0.0);
+            artistWave = new WaveText(artistText, 262, 3.0, 0.35);
+            brandWave = new WaveText((TextBlock)card.FindName("BrandText"), 120, 2.5, 0.7);
+            remainingWave = new WaveText(remainingText, 80, 2.0, 1.05);
 
             var clipHost = (FrameworkElement)card.FindName("ClipHost");
             clipHost.Clip = new RectangleGeometry(new Rect(0, 0, CardWidth, CardHeight), 18, 18);
@@ -227,9 +272,9 @@ namespace AnikiHelper.Services.Spotify
             var fraction = durationMs > 0 ? Math.Max(0, current / durationMs) : 0;
             progressFill.Width = progressTrack.ActualWidth * fraction;
             var remaining = TimeSpan.FromMilliseconds(Math.Max(0, durationMs - current));
-            remainingText.Text = durationMs > 0
+            remainingWave?.SetText(durationMs > 0
                 ? "-" + (int)remaining.TotalMinutes + ":" + remaining.Seconds.ToString("00")
-                : string.Empty;
+                : string.Empty);
         }
 
         private static BitmapImage Load(string url, int decodeWidth)
@@ -252,6 +297,125 @@ namespace AnikiHelper.Services.Spotify
             catch
             {
                 return null;
+            }
+        }
+
+        /// <summary>
+        /// Replaces a TextBlock with one TextBlock per character and moves them in a
+        /// travelling wave (bob + slight tilt), like bouncy animated title text.
+        /// </summary>
+        private sealed class WaveText
+        {
+            private const double PeriodSeconds = 1.5;
+            private const double PhaseStep = 0.55;
+
+            private readonly TextBlock template;
+            private readonly StackPanel panel;
+            private readonly double maxWidth;
+            private readonly double amplitude;
+            private readonly double phaseOffset;
+            private string text;
+
+            public WaveText(TextBlock source, double maxWidth, double amplitude, double phaseOffset)
+            {
+                template = source;
+                this.maxWidth = maxWidth;
+                this.amplitude = amplitude;
+                this.phaseOffset = phaseOffset;
+                panel = new StackPanel
+                {
+                    Orientation = Orientation.Horizontal,
+                    Margin = source.Margin,
+                    HorizontalAlignment = source.HorizontalAlignment,
+                    VerticalAlignment = source.VerticalAlignment,
+                    IsHitTestVisible = false
+                };
+                Grid.SetRow(panel, Grid.GetRow(source));
+                Grid.SetColumn(panel, Grid.GetColumn(source));
+                Grid.SetColumnSpan(panel, Grid.GetColumnSpan(source));
+
+                var parent = source.Parent as Panel;
+                if (parent != null)
+                {
+                    parent.Children.Insert(parent.Children.IndexOf(source) + 1, panel);
+                }
+
+                source.Visibility = Visibility.Collapsed;
+            }
+
+            public void SetText(string value)
+            {
+                value = Fit(value ?? string.Empty);
+                if (value == text)
+                {
+                    return;
+                }
+
+                text = value;
+                panel.Children.Clear();
+                foreach (var ch in value)
+                {
+                    var group = new TransformGroup();
+                    group.Children.Add(new RotateTransform());
+                    group.Children.Add(new TranslateTransform());
+                    panel.Children.Add(new TextBlock
+                    {
+                        Text = ch.ToString(),
+                        FontFamily = template.FontFamily,
+                        FontSize = template.FontSize,
+                        FontWeight = template.FontWeight,
+                        Foreground = template.Foreground,
+                        RenderTransformOrigin = new Point(0.5, 0.5),
+                        RenderTransform = group
+                    });
+                }
+            }
+
+            public void Animate(double seconds)
+            {
+                var omega = 2 * Math.PI / PeriodSeconds;
+                for (var i = 0; i < panel.Children.Count; i++)
+                {
+                    var letter = (TextBlock)panel.Children[i];
+                    var group = (TransformGroup)letter.RenderTransform;
+                    var phase = omega * seconds - (i * PhaseStep) - phaseOffset;
+                    ((TranslateTransform)group.Children[1]).Y = -amplitude * Math.Sin(phase);
+                    ((RotateTransform)group.Children[0]).Angle = 4.0 * Math.Cos(phase);
+                }
+            }
+
+            private string Fit(string value)
+            {
+                if (Measure(value) <= maxWidth)
+                {
+                    return value;
+                }
+
+                for (var length = value.Length - 1; length > 0; length--)
+                {
+                    var candidate = value.Substring(0, length).TrimEnd() + "…";
+                    if (Measure(candidate) <= maxWidth)
+                    {
+                        return candidate;
+                    }
+                }
+
+                return "…";
+            }
+
+            private double Measure(string value)
+            {
+                var typeface = new Typeface(template.FontFamily, FontStyles.Normal, template.FontWeight, FontStretches.Normal);
+#pragma warning disable 618
+                var formatted = new FormattedText(
+                    value,
+                    System.Globalization.CultureInfo.CurrentUICulture,
+                    FlowDirection.LeftToRight,
+                    typeface,
+                    template.FontSize,
+                    Brushes.White);
+#pragma warning restore 618
+                return formatted.WidthIncludingTrailingWhitespace;
             }
         }
 
@@ -291,7 +455,7 @@ namespace AnikiHelper.Services.Spotify
         <StackPanel Orientation='Horizontal' HorizontalAlignment='Right' VerticalAlignment='Top'>
           <TextBlock x:Name='BrandGlyph' FontFamily='Segoe Fluent Icons, Segoe MDL2 Assets' FontSize='18'
                      Foreground='#FFFFFF' VerticalAlignment='Center' Margin='0,0,7,0'/>
-          <TextBlock Text='Spotify' FontSize='17' FontWeight='SemiBold' Foreground='#FFFFFF' VerticalAlignment='Center'/>
+          <TextBlock x:Name='BrandText' Text='Spotify' FontSize='17' FontWeight='SemiBold' Foreground='#FFFFFF' VerticalAlignment='Center'/>
         </StackPanel>
         <StackPanel VerticalAlignment='Center' Margin='0,26,0,0'>
           <TextBlock x:Name='TitleText' FontSize='23' FontWeight='Bold' Foreground='#FFFFFF' TextTrimming='CharacterEllipsis'/>
