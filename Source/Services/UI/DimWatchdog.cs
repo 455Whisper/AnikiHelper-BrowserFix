@@ -145,38 +145,45 @@ namespace AnikiHelper.Services.UI
                     }
                 }
 
-                var type = main.GetType();
-                while (type != null)
+                // The overlay binds to {Binding ChildOpened} on the window's DataContext (view model).
+                var model = main.DataContext;
+                if (model == null)
                 {
-                    var field = type.GetField("ChildOpenedProperty", System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static);
-                    var dp = field?.GetValue(null) as DependencyProperty;
-                    if (dp != null)
-                    {
-                        if (Equals(main.GetValue(dp), true))
-                        {
-                            main.SetCurrentValue(dp, false);
-                            logger?.Info("[AnikiHelper][DimCheck] Cleared stuck ChildOpened (dark overlay) on " + type.Name + ".");
-                        }
-
-                        return;
-                    }
-
-                    var property = type.GetProperty("ChildOpened", System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.DeclaredOnly);
-                    if (property != null && property.PropertyType == typeof(bool))
-                    {
-                        if (Equals(property.GetValue(main), true) && property.CanWrite)
-                        {
-                            property.SetValue(main, false);
-                            logger?.Info("[AnikiHelper][DimCheck] Cleared stuck ChildOpened (dark overlay) on " + type.Name + ".");
-                        }
-
-                        return;
-                    }
-
-                    type = type.BaseType;
+                    logger?.Info("[AnikiHelper][DimCheck] Main window has no DataContext.");
+                    return;
                 }
 
-                logger?.Info("[AnikiHelper][DimCheck] ChildOpened not found on " + main.GetType().FullName);
+                var flags = System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance;
+                var property = model.GetType().GetProperty("ChildOpened", flags);
+                if (property == null || property.PropertyType != typeof(bool))
+                {
+                    logger?.Info("[AnikiHelper][DimCheck] ChildOpened not found on " + model.GetType().FullName);
+                    return;
+                }
+
+                if (!Equals(property.GetValue(model), true))
+                {
+                    return;
+                }
+
+                var setter = property.GetSetMethod(true);
+                if (setter != null)
+                {
+                    setter.Invoke(model, new object[] { false });
+                }
+                else
+                {
+                    var backing = model.GetType().GetField("<ChildOpened>k__BackingField", flags) ??
+                                  model.GetType().GetField("childOpened", flags);
+                    backing?.SetValue(model, false);
+                }
+
+                // Make sure bindings hear about it even if the setter does not notify.
+                var notify = model.GetType().GetMethod("OnPropertyChanged", flags, null, new[] { typeof(string) }, null);
+                try { notify?.Invoke(model, new object[] { "ChildOpened" }); } catch { }
+
+                logger?.Info("[AnikiHelper][DimCheck] Cleared stuck ChildOpened on " + model.GetType().Name +
+                             " (now " + property.GetValue(model) + ").");
             }
             catch (Exception ex)
             {

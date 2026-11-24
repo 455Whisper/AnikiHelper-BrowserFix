@@ -908,12 +908,13 @@ namespace AnikiHelper.Services.Spotify
             <ColumnDefinition Width='56'/>
           </Grid.ColumnDefinitions>
           <Button Command='{Binding ToggleMute}' IsEnabled='{Binding CanMute}' Focusable='False'
-                  Cursor='Hand' VerticalAlignment='Center' Margin='0' Padding='4,2'>
+                  Cursor='Hand' VerticalAlignment='Stretch' Margin='0' Padding='4,0'>
             <Button.Template>
               <ControlTemplate TargetType='Button'>
                 <Border Background='Transparent' Padding='{TemplateBinding Padding}'>
                   <TextBlock Text='{Binding IconGlyph}' FontFamily='Segoe Fluent Icons, Segoe MDL2 Assets' FontSize='20'
-                             Width='22' Foreground='{Binding IconBrush}'/>
+                             Width='24' Height='20' LineHeight='20' LineStackingStrategy='BlockLineHeight'
+                             TextAlignment='Left' VerticalAlignment='Center' Foreground='{Binding IconBrush}'/>
                 </Border>
               </ControlTemplate>
             </Button.Template>

@@ -51,7 +51,7 @@ namespace AnikiHelper.Services.Visualizer
         private const double PitchDegrees = 34;
         private const double SwayDegrees = 5;
         private const double StepSeconds = 1.0 / 40;
-        private const double HeightScale = 4.0;
+        private const double HeightScale = 2.6;
         private const int MaxRenderWidth = 1280;
 
         private static readonly Color NearColor = Color.FromRgb(0x5E, 0xE3, 0xE8);
@@ -154,7 +154,7 @@ namespace AnikiHelper.Services.Visualizer
                 {
                     var x = ((c / (double)(Columns - 1)) * 2 - 1) * Spread;
                     var amplitude = row == null ? 0 : row[c];
-                    var y = Math.Pow(amplitude, 1.3) * HeightScale * distanceFade;
+                    var y = Math.Pow(amplitude, 1.5) * HeightScale * distanceFade;
 
                     var dy = y - cameraHeight;
                     var x1 = (x * cosYaw) - (z * sinYaw);
