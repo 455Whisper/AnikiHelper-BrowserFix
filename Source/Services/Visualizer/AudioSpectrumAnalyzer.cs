@@ -48,7 +48,7 @@ namespace AnikiHelper.Services.Visualizer
         private WasapiCapture capture;
 
         /// <summary>
-        /// Loopback capture with a 20 ms buffer (NAudio's default is 100 ms, read in 50 ms
+        /// Loopback capture with a 10 ms buffer (NAudio's default is 100 ms, read in 50 ms
         /// chunks), so sound reaches the visualizer almost as soon as Windows plays it.
         /// </summary>
         private sealed class LowLatencyLoopbackCapture : WasapiCapture
@@ -57,7 +57,7 @@ namespace AnikiHelper.Services.Visualizer
                 : base(new NAudio.CoreAudioApi.MMDeviceEnumerator().GetDefaultAudioEndpoint(
                            NAudio.CoreAudioApi.DataFlow.Render, NAudio.CoreAudioApi.Role.Multimedia),
                        false,
-                       20)
+                       10)
             {
             }
 
@@ -67,7 +67,26 @@ namespace AnikiHelper.Services.Visualizer
             }
         }
 
+        [System.Runtime.InteropServices.DllImport("winmm.dll")]
+        private static extern uint timeBeginPeriod(uint period);
+
+        [System.Runtime.InteropServices.DllImport("winmm.dll")]
+        private static extern uint timeEndPeriod(uint period);
+
+        private bool timerRaised;
+
+        // Time-domain bass: a 150 Hz low-pass filter, then loudness over the last ~5 ms.
+        // This reacts almost instantly, unlike an FFT which always looks back over its window.
+        private const int RmsWindow = 256;
+        private double b0, b1, b2, a1, a2, x1, x2, y1, y2;
+        private readonly double[] bassSquares = new double[RmsWindow];
+        private double bassSquareSum;
+        private int bassIndex;
+        private float latestTimeBass;
+        private float timeBassPeak = 0.02f;
+
         private float bassAverage;
+        private float smoothTimeBass;
         private float beat;
         private DateTime lastBeatUtc = DateTime.MinValue;
 
@@ -95,8 +114,16 @@ namespace AnikiHelper.Services.Visualizer
             Stop();
             try
             {
+                if (!timerRaised)
+                {
+                    // Lets the capture loop wake every few ms instead of every ~15 ms.
+                    timeBeginPeriod(1);
+                    timerRaised = true;
+                }
+
                 capture = new LowLatencyLoopbackCapture();
                 sampleRate = capture.WaveFormat.SampleRate;
+                SetupBassFilter(150, sampleRate);
                 capture.DataAvailable += OnDataAvailable;
                 capture.RecordingStopped += (s, e) =>
                 {
@@ -114,8 +141,28 @@ namespace AnikiHelper.Services.Visualizer
             }
         }
 
+        private void SetupBassFilter(double cutoff, int rate)
+        {
+            var w0 = 2 * Math.PI * cutoff / rate;
+            var cos = Math.Cos(w0);
+            var alpha = Math.Sin(w0) / (2 * 0.7071);
+            var a0 = 1 + alpha;
+            b0 = ((1 - cos) / 2) / a0;
+            b1 = (1 - cos) / a0;
+            b2 = ((1 - cos) / 2) / a0;
+            a1 = (-2 * cos) / a0;
+            a2 = (1 - alpha) / a0;
+            x1 = x2 = y1 = y2 = 0;
+        }
+
         public void Stop()
         {
+            if (timerRaised)
+            {
+                timeEndPeriod(1);
+                timerRaised = false;
+            }
+
             var current = capture;
             capture = null;
             if (current == null)
@@ -169,12 +216,29 @@ namespace AnikiHelper.Services.Visualizer
                     }
                 }
 
-                ring[ringPosition] = mono / channels;
+                var sample = mono / channels;
+                ring[ringPosition] = sample;
                 ringPosition = (ringPosition + 1) % FftLength;
                 samplesSinceFft++;
+
+                var low = (b0 * sample) + (b1 * x1) + (b2 * x2) - (a1 * y1) - (a2 * y2);
+                x2 = x1; x1 = sample; y2 = y1; y1 = low;
+                var square = low * low;
+                bassSquareSum += square - bassSquares[bassIndex];
+                bassSquares[bassIndex] = square;
+                bassIndex = (bassIndex + 1) % RmsWindow;
             }
 
-            if (samplesSinceFft >= 256)
+            var rms = (float)Math.Sqrt(Math.Max(0, bassSquareSum) / RmsWindow);
+            var level = (float)Math.Max(0, (20 * Math.Log10(rms + 1e-7) + 60) / 50);
+            timeBassPeak = Math.Max(level, timeBassPeak * 0.997f);
+            lock (sync)
+            {
+                latestTimeBass = Math.Min(1f, level / Math.Max(0.3f, timeBassPeak));
+                lastDataUtc = DateTime.UtcNow;
+            }
+
+            if (samplesSinceFft >= 128)
             {
                 samplesSinceFft = 0;
                 RunFft();
@@ -231,21 +295,42 @@ namespace AnikiHelper.Services.Visualizer
                 {
                     var target = silent ? 0f : latestBands[i];
                     // Fast attack, slower release.
-                    // Near-instant rise, quick fall: visuals follow the music tightly.
-                    var rate = target > smoothBands[i] ? 60.0 : 11.0;
-                    smoothBands[i] += (float)((target - smoothBands[i]) * (1 - Math.Exp(-rate * deltaSeconds)));
+                    // Jump straight up to a new peak; ease only on the way down.
+                    if (target >= smoothBands[i])
+                    {
+                        smoothBands[i] = target;
+                    }
+                    else
+                    {
+                        smoothBands[i] += (float)((target - smoothBands[i]) * (1 - Math.Exp(-14.0 * deltaSeconds)));
+                    }
                 }
             }
 
             Array.Copy(smoothBands, frame.Bands, smoothBands.Length);
-            frame.Bass = Average(frame.Bands, 0, 8);
+            float timeBass;
+            lock (sync)
+            {
+                timeBass = silent ? 0f : latestTimeBass;
+            }
+
+            if (timeBass >= smoothTimeBass)
+            {
+                smoothTimeBass = timeBass;
+            }
+            else
+            {
+                smoothTimeBass += (float)((timeBass - smoothTimeBass) * (1 - Math.Exp(-16.0 * deltaSeconds)));
+            }
+
+            frame.Bass = Math.Max(smoothTimeBass, Average(frame.Bands, 0, 8) * 0.8f);
             frame.Mid = Average(frame.Bands, 8, 34);
             frame.Treble = Average(frame.Bands, 34, AudioFrame.BandCount);
             frame.Energy = (frame.Bass * 0.5f) + (frame.Mid * 0.35f) + (frame.Treble * 0.15f);
 
             bassAverage += (float)((frame.Bass - bassAverage) * (1 - Math.Exp(-1.5 * deltaSeconds)));
             var now = DateTime.UtcNow;
-            if (frame.Bass > 0.3f && frame.Bass > bassAverage * 1.25f && (now - lastBeatUtc).TotalMilliseconds > 260)
+            if (frame.Bass > 0.3f && frame.Bass > bassAverage * 1.25f && (now - lastBeatUtc).TotalMilliseconds > 180)
             {
                 beat = 1f;
                 lastBeatUtc = now;
