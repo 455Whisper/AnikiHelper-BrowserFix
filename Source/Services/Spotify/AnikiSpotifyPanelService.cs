@@ -599,10 +599,11 @@ namespace AnikiHelper.Services.Spotify
             if (mixer == null)
             {
                 mixer = new AudioMixerSource(logger, api.DataDirectory);
-                mixer.DeviceVolumeChanged += (key, volume) => RunOnUi(() =>
+                mixer.DeviceVolumeChanged += (key, volume, muted) => RunOnUi(() =>
                 {
                     var entry = audioEntries.FirstOrDefault(e => e.Key == key);
                     entry?.UpdateFromSystem(volume);
+                    entry?.UpdateMuteFromSystem(muted);
                 });
                 mixer.DevicesChanged += () => RunOnUi(ScheduleDeviceListReload);
             }
@@ -906,8 +907,17 @@ namespace AnikiHelper.Services.Spotify
             <ColumnDefinition Width='*'/>
             <ColumnDefinition Width='56'/>
           </Grid.ColumnDefinitions>
-          <TextBlock Text='&#xE767;' FontFamily='Segoe Fluent Icons, Segoe MDL2 Assets' FontSize='20'
-                     Foreground='#7FB8FF' VerticalAlignment='Center' Margin='4,0,0,0'/>
+          <Button Command='{Binding ToggleMute}' IsEnabled='{Binding CanMute}' Focusable='False'
+                  Cursor='Hand' VerticalAlignment='Center' Margin='0' Padding='4,2'>
+            <Button.Template>
+              <ControlTemplate TargetType='Button'>
+                <Border Background='Transparent' Padding='{TemplateBinding Padding}'>
+                  <TextBlock Text='{Binding IconGlyph}' FontFamily='Segoe Fluent Icons, Segoe MDL2 Assets' FontSize='20'
+                             Width='22' Foreground='{Binding IconBrush}'/>
+                </Border>
+              </ControlTemplate>
+            </Button.Template>
+          </Button>
           <Slider Grid.Column='1' Margin='6,0' Style='{StaticResource VolumeSlider}'
                   IsEnabled='{Binding SliderEnabled}'
                   Value='{Binding Volume, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}'/>
@@ -1173,6 +1183,15 @@ namespace AnikiHelper.Services.Spotify
             }
 
             lastActivateUtc = now;
+            // A on a volume slider toggles mute (same as clicking the speaker icon).
+            var focusedSlider = Keyboard.FocusedElement as Slider;
+            var sliderEntry = focusedSlider?.DataContext as AudioEntry;
+            if (sliderEntry != null && sliderEntry.CanMute && IsInside(focusedSlider, windowHost))
+            {
+                sliderEntry.SetMuted(!sliderEntry.IsMuted);
+                return;
+            }
+
             var button = Keyboard.FocusedElement as ButtonBase;
             if (button != null && IsInside(button, windowHost))
             {

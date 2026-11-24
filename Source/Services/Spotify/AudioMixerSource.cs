@@ -24,6 +24,7 @@ namespace AnikiHelper.Services.Spotify
             Name = name;
             this.apply = apply;
             volume = Math.Round(initial * 100);
+            ToggleMute = new Playnite.SDK.RelayCommand(() => SetMuted(!isMuted));
         }
 
         /// <summary>Devices can be picked as the output; apps cannot.</summary>
@@ -33,6 +34,76 @@ namespace AnikiHelper.Services.Spotify
 
         public System.Windows.Input.ICommand Select { get; set; }
 
+        private bool isMuted;
+
+        /// <summary>Sets the Windows mute flag for this device/app.</summary>
+        public Action<bool> MuteSetter { get; set; }
+
+        public System.Windows.Input.ICommand ToggleMute { get; private set; }
+
+        public bool IsMuted
+        {
+            get { return isMuted; }
+        }
+
+        public bool CanMute
+        {
+            get { return sliderEnabled && MuteSetter != null; }
+        }
+
+        /// <summary>Speaker with 0-3 sound waves, or the crossed-out speaker when muted.</summary>
+        public string IconGlyph
+        {
+            get
+            {
+                if (isMuted)
+                {
+                    return "\uE74F";
+                }
+
+                return volume <= 0 ? "\uE992" : volume < 34 ? "\uE993" : volume < 67 ? "\uE994" : "\uE995";
+            }
+        }
+
+        public System.Windows.Media.Brush IconBrush
+        {
+            get { return isMuted || !sliderEnabled ? MutedBrush : ActiveBrush; }
+        }
+
+        private static readonly System.Windows.Media.Brush ActiveBrush = FrozenBrush(0x7F, 0xB8, 0xFF);
+        private static readonly System.Windows.Media.Brush MutedBrush = FrozenBrush(0x6A, 0x6A, 0x6A);
+
+        private static System.Windows.Media.Brush FrozenBrush(byte r, byte g, byte b)
+        {
+            var brush = new System.Windows.Media.SolidColorBrush(System.Windows.Media.Color.FromRgb(r, g, b));
+            brush.Freeze();
+            return brush;
+        }
+
+        public void SetMuted(bool muted)
+        {
+            if (MuteSetter == null)
+            {
+                return;
+            }
+
+            try { MuteSetter(muted); } catch { }
+            UpdateMuteFromSystem(muted);
+        }
+
+        public void UpdateMuteFromSystem(bool muted)
+        {
+            if (isMuted == muted)
+            {
+                return;
+            }
+
+            isMuted = muted;
+            Raise("IsMuted");
+            Raise("IconGlyph");
+            Raise("IconBrush");
+        }
+
         public bool SliderEnabled
         {
             get { return sliderEnabled; }
@@ -40,6 +111,8 @@ namespace AnikiHelper.Services.Spotify
             {
                 sliderEnabled = value;
                 Raise("SliderEnabled");
+                Raise("CanMute");
+                Raise("IconBrush");
             }
         }
 
@@ -64,10 +137,17 @@ namespace AnikiHelper.Services.Spotify
                 if (!updatingFromSystem)
                 {
                     try { apply?.Invoke((float)(volume / 100.0)); } catch { }
+
+                    // Dragging the volume up unmutes, like the Windows volume flyout.
+                    if (isMuted && volume > 0)
+                    {
+                        SetMuted(false);
+                    }
                 }
 
                 Raise("Volume");
                 Raise("Percent");
+                Raise("IconGlyph");
             }
         }
 
@@ -101,6 +181,7 @@ namespace AnikiHelper.Services.Spotify
         private readonly ILogger logger;
         private readonly string volumesFile;
         private readonly Dictionary<string, Func<float>> readers = new Dictionary<string, Func<float>>();
+        private readonly Dictionary<string, Func<bool>> muteReaders = new Dictionary<string, Func<bool>>();
         private Dictionary<string, float> rememberedVolumes;
         private MMDeviceEnumerator notifyEnumerator;
         private DeviceNotifications deviceNotifications;
@@ -111,7 +192,7 @@ namespace AnikiHelper.Services.Spotify
         public event Action DevicesChanged;
 
         /// <summary>A device's volume changed anywhere in Windows (key, 0-1 volume).</summary>
-        public event Action<string, float> DeviceVolumeChanged;
+        public event Action<string, float, bool> DeviceVolumeChanged;
 
         /// <summary>Starts listening for device changes (call once).</summary>
         public void StartWatching()
@@ -292,6 +373,7 @@ namespace AnikiHelper.Services.Spotify
         {
             var result = new List<AudioEntry>();
             readers.Clear();
+            muteReaders.Clear();
             ClearVolumeSubscriptions();
             try
             {
@@ -314,8 +396,9 @@ namespace AnikiHelper.Services.Spotify
                     if (inUse)
                     {
                         readers[key] = () => endpoint.MasterVolumeLevelScalar;
+                        muteReaders[key] = () => endpoint.Mute;
                         var entryKey = key;
-                        AudioEndpointVolumeNotificationDelegate handler = data => DeviceVolumeChanged?.Invoke(entryKey, data.MasterVolume);
+                        AudioEndpointVolumeNotificationDelegate handler = data => DeviceVolumeChanged?.Invoke(entryKey, data.MasterVolume, data.Muted);
                         try
                         {
                             endpoint.OnVolumeNotification += handler;
@@ -345,8 +428,17 @@ namespace AnikiHelper.Services.Spotify
                     {
                         IsSelectable = true,
                         DeviceId = device.ID,
-                        SliderEnabled = inUse
+                        SliderEnabled = inUse,
+                        MuteSetter = inUse ? new Action<bool>(m =>
+                        {
+                            endpoint.Mute = m;
+                            logger?.Info("[AnikiHelper][Audio] " + (m ? "Muted '" : "Unmuted '") + device.FriendlyName + "'");
+                        }) : null
                     });
+                    if (inUse)
+                    {
+                        try { result[result.Count - 1].UpdateMuteFromSystem(endpoint.Mute); } catch { }
+                    }
                 }
 
                 // The device in use first.
@@ -364,6 +456,7 @@ namespace AnikiHelper.Services.Spotify
         {
             var result = new List<AudioEntry>();
             readers.Clear();
+            muteReaders.Clear();
             ClearVolumeSubscriptions();
             try
             {
@@ -411,7 +504,8 @@ namespace AnikiHelper.Services.Spotify
                     var volumes = groups[name];
                     var key = "app:" + name;
                     readers[key] = () => volumes.Max(v => v.Volume);
-                    result.Add(new AudioEntry(
+                    muteReaders[key] = () => volumes.All(v => v.Mute);
+                    var appEntry = new AudioEntry(
                         key,
                         name,
                         volumes.Max(v => v.Volume),
@@ -421,7 +515,18 @@ namespace AnikiHelper.Services.Spotify
                             {
                                 try { volume.Volume = v; } catch { }
                             }
-                        }));
+                        })
+                    {
+                        MuteSetter = m =>
+                        {
+                            foreach (var volume in volumes)
+                            {
+                                try { volume.Mute = m; } catch { }
+                            }
+                        }
+                    };
+                    try { appEntry.UpdateMuteFromSystem(volumes.All(v => v.Mute)); } catch { }
+                    result.Add(appEntry);
                 }
             }
             catch (Exception ex)
@@ -441,6 +546,12 @@ namespace AnikiHelper.Services.Spotify
                 if (readers.TryGetValue(entry.Key, out read))
                 {
                     try { entry.UpdateFromSystem(read()); } catch { }
+                }
+
+                Func<bool> readMute;
+                if (muteReaders.TryGetValue(entry.Key, out readMute))
+                {
+                    try { entry.UpdateMuteFromSystem(readMute()); } catch { }
                 }
             }
         }
