@@ -84,7 +84,7 @@ namespace AnikiHelper.Services.WebBrowser
         private const string ControllerCompatibilityScript = @"
 (() => {
     // Custom: gamepad access is blocked in cursor mode and passed through in
-    // game controller mode (toggled from the host with L3+R3).
+    // game controller mode (toggled from the host with L3).
     window.__anikiPadPass = window.__anikiPadPass === true;
     const realGetGamepads = navigator.getGamepads ? navigator.getGamepads.bind(navigator) : (() => []);
     // Virtual Xbox pad fed by the host (Aniki reads the controller and posts its state).
@@ -449,7 +449,7 @@ namespace AnikiHelper.Services.WebBrowser
                 return;
             }
 
-            // Custom: quick L3+R3 tap toggles game controller mode (hold still opens the keyboard).
+            // Custom: L3 tap enters game controller mode, L3 hold (1s) leaves it.
             HandleGameModeChord(state);
             if (gamepadPassthrough)
             {
@@ -488,6 +488,49 @@ namespace AnikiHelper.Services.WebBrowser
 
             if (viewMode == AnikiWebBrowserViewMode.Web)
             {
+                // Extensions drop-down open: it takes the D-pad / A / B.
+                if (extensionsOverlay != null && extensionsOverlay.IsOpen)
+                {
+                    if (state.ClosePressed)
+                    {
+                        InvokeOnUi(CloseCore);
+                        return;
+                    }
+
+                    if (extensionsOverlay.IsPopupOpen)
+                    {
+                        // Interact with the extension page using the cursor.
+                        pointerController.ProcessInput(state);
+                    }
+                    else
+                    {
+                        var still = state;
+                        still.LeftX = 0;
+                        still.LeftY = 0;
+                        still.RightX = 0;
+                        still.RightY = 0;
+                        still.LeftClick = false;
+                        pointerController.ProcessInput(still);
+                    }
+
+                    if (state.DPadUpPressed) { InvokeOnUi(() => OverlayMoveCore(FocusNavigationDirection.Up)); }
+                    if (state.DPadDownPressed) { InvokeOnUi(() => OverlayMoveCore(FocusNavigationDirection.Down)); }
+                    if (state.DPadLeftPressed) { InvokeOnUi(() => OverlayMoveCore(FocusNavigationDirection.Left)); }
+                    if (state.DPadRightPressed) { InvokeOnUi(() => OverlayMoveCore(FocusNavigationDirection.Right)); }
+                    if (state.ActivatePressed) { InvokeOnUi(OverlayActivateCore); }
+                    if (state.BackPressed) { InvokeOnUi(OverlayBackCore); }
+                    return;
+                }
+
+                // D-pad right on a web page: open the Extensions drop-down (top right).
+                if (state.DPadRightPressed && (DateTime.UtcNow - lastOverlayMoveUtc).TotalMilliseconds > 300)
+                {
+                    lastOverlayMoveUtc = DateTime.UtcNow;
+                    lastOverlayMoveDirection = FocusNavigationDirection.Right;
+                    InvokeOnUi(OpenExtensionsOverlayCore);
+                    return;
+                }
+
                 // D-pad up on a web page: show / hide the controls bar.
                 if (state.DPadUpPressed && (DateTime.UtcNow - lastFooterToggleUtc).TotalMilliseconds > 250)
                 {
@@ -1196,6 +1239,15 @@ namespace AnikiHelper.Services.WebBrowser
             footerContainer.Visibility = Visibility.Collapsed;
             root.Children.Add(footerContainer);
 
+            extensionsOverlay = new AnikiExtensionsOverlay(
+                logger,
+                () => webView?.CoreWebView2,
+                () => environment,
+                GetCustomExtensionsFolder,
+                ExtensionDirectoryFor);
+            Grid.SetRow(extensionsOverlay.Element, 0);
+            root.Children.Add(extensionsOverlay.Element);
+
             host.Content = root;
 
             host.Closed += WindowHost_Closed;
@@ -1359,6 +1411,7 @@ namespace AnikiHelper.Services.WebBrowser
 
         private void ShowFooterPermanentlyCore()
         {
+            CloseExtensionsOverlayCore();
             footerAutoHideTimer?.Stop();
             footerToggledOn = false;
             SetFooterVisibleCore(false);
@@ -1437,10 +1490,11 @@ namespace AnikiHelper.Services.WebBrowser
                 AddFooterLegendItem("ButtonPromptRB", "RB", "WebBrowser_LegendNext", "Next");
                 AddFooterLegendItem("ButtonPromptStart", "Start", "WebBrowser_LegendEnter", "Enter");
                 AddFooterLegendItem("ButtonPromptX", "X", "WebBrowser_LegendKeyboard", "Keyboard");
-                AddFooterLegendItem("ButtonPromptDPadLeft", "\u25C0", "WebBrowser_LegendAudio", "Audio");
-                AddFooterLegendItem("ButtonPromptL3R3", "L3+R3", "WebBrowser_LegendGameMode", "Game mode");
+                AddFooterLegendItem("ButtonPromptDPadLeft", "\u25C0", "WebBrowser_LegendAudio", "\u25C0  Audio");
+                AddFooterLegendItem("ButtonPromptDPadRight", "\u25B6", "WebBrowser_LegendExtensions", "\u25B6  Extensions");
+                AddFooterLegendItem("ButtonPromptL3", "L3", "WebBrowser_LegendGameMode", "Game mode");
                 AddFooterLegendItem("ButtonPromptBack", "View", "WebBrowser_LegendCloseView", "Close web view");
-                AddFooterLegendItem("ButtonPromptDPadUp", "\u25B2", "WebBrowser_LegendHideBar", "Hide bar");
+                AddFooterLegendItem("ButtonPromptDPadUp", "\u25B2", "WebBrowser_LegendHideBar", "\u25B2  Hide bar");
                 SetFooterStatus(string.Empty); // Custom: no site name in the bar
             }
         }
@@ -1552,8 +1606,9 @@ namespace AnikiHelper.Services.WebBrowser
             {
                 case "ButtonPromptBack": return "Back";
                 case "ButtonPromptDPadLeft":
+                case "ButtonPromptDPadRight":
                 case "ButtonPromptDPadUp": return "Dpad";
-                case "ButtonPromptL3R3": return "LS";
+                case "ButtonPromptL3": return "LS";
                 default:
                     return resourceKey.StartsWith("ButtonPrompt", StringComparison.Ordinal)
                         ? resourceKey.Substring("ButtonPrompt".Length)
@@ -2058,6 +2113,33 @@ namespace AnikiHelper.Services.WebBrowser
 
         private void WindowHost_PreviewKeyDown(object sender, KeyEventArgs e)
         {
+            if (extensionsOverlay != null && extensionsOverlay.IsOpen)
+            {
+                switch (e.Key)
+                {
+                    case Key.Up: OverlayMoveCore(FocusNavigationDirection.Up); e.Handled = true; return;
+                    case Key.Down: OverlayMoveCore(FocusNavigationDirection.Down); e.Handled = true; return;
+                    case Key.Left: OverlayMoveCore(FocusNavigationDirection.Left); e.Handled = true; return;
+                    case Key.Right: OverlayMoveCore(FocusNavigationDirection.Right); e.Handled = true; return;
+                    case Key.Enter:
+                    case Key.Space:
+                        if (!extensionsOverlay.IsPopupOpen)
+                        {
+                            OverlayActivateCore();
+                            e.Handled = true;
+                            return;
+                        }
+
+                        break;
+                    case Key.Escape:
+                    case Key.Back:
+                    case Key.BrowserBack:
+                        OverlayBackCore();
+                        e.Handled = true;
+                        return;
+                }
+            }
+
             if (e.Key == Key.Escape)
             {
                 if (viewMode == AnikiWebBrowserViewMode.Web)
@@ -3047,6 +3129,122 @@ namespace AnikiHelper.Services.WebBrowser
             return options;
         }
 
+        private readonly Dictionary<string, string> extensionDirectories = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        private AnikiExtensionsOverlay extensionsOverlay;
+        private DateTime lastOverlayMoveUtc = DateTime.MinValue;
+        private FocusNavigationDirection lastOverlayMoveDirection;
+        private DateTime lastOverlayActivateUtc = DateTime.MinValue;
+        private DateTime lastOverlayBackUtc = DateTime.MinValue;
+
+        private string ExtensionDirectoryFor(string id)
+        {
+            string dir;
+            if (id != null && extensionDirectories.TryGetValue(id, out dir))
+            {
+                return dir;
+            }
+
+            // Fallback: match by manifest name is not reliable; scan folders for a "key"-less match by id is impossible,
+            // so just return null (the overlay then shows the WebView2 name and a letter icon).
+            return null;
+        }
+
+        private void OpenExtensionsOverlayCore()
+        {
+            if (viewMode != AnikiWebBrowserViewMode.Web || extensionsOverlay == null || extensionsOverlay.IsOpen)
+            {
+                return;
+            }
+
+            extensionsOverlay.Open();
+        }
+
+        private void CloseExtensionsOverlayCore()
+        {
+            if (extensionsOverlay == null || !extensionsOverlay.IsOpen)
+            {
+                return;
+            }
+
+            extensionsOverlay.Close();
+            try { webView?.Focus(); } catch { }
+        }
+
+        // Pad states and Steam/Playnite key presses can both arrive for one press: dedupe.
+        private bool AcceptOverlayMove(FocusNavigationDirection direction)
+        {
+            var now = DateTime.UtcNow;
+            if (direction == lastOverlayMoveDirection && (now - lastOverlayMoveUtc).TotalMilliseconds < 230)
+            {
+                return false;
+            }
+
+            lastOverlayMoveDirection = direction;
+            lastOverlayMoveUtc = now;
+            return true;
+        }
+
+        private bool AcceptOverlay(ref DateTime last)
+        {
+            var now = DateTime.UtcNow;
+            if ((now - last).TotalMilliseconds < 250)
+            {
+                return false;
+            }
+
+            last = now;
+            return true;
+        }
+
+        private void OverlayMoveCore(FocusNavigationDirection direction)
+        {
+            if (extensionsOverlay == null || !extensionsOverlay.IsOpen || !AcceptOverlayMove(direction))
+            {
+                return;
+            }
+
+            if (extensionsOverlay.IsPopupOpen)
+            {
+                if (direction == FocusNavigationDirection.Right)
+                {
+                    extensionsOverlay.ClosePopup();
+                }
+
+                return;
+            }
+
+            if (!extensionsOverlay.Move(direction))
+            {
+                CloseExtensionsOverlayCore();
+            }
+        }
+
+        private void OverlayActivateCore()
+        {
+            if (extensionsOverlay != null && extensionsOverlay.IsOpen && !extensionsOverlay.IsPopupOpen &&
+                AcceptOverlay(ref lastOverlayActivateUtc))
+            {
+                extensionsOverlay.ActivateFocused();
+            }
+        }
+
+        private void OverlayBackCore()
+        {
+            if (extensionsOverlay == null || !extensionsOverlay.IsOpen || !AcceptOverlay(ref lastOverlayBackUtc))
+            {
+                return;
+            }
+
+            if (extensionsOverlay.IsPopupOpen)
+            {
+                extensionsOverlay.ClosePopup();
+            }
+            else
+            {
+                CloseExtensionsOverlayCore();
+            }
+        }
+
         private string GetCustomExtensionsFolder()
         {
             var parent = Path.GetDirectoryName(userDataFolder.TrimEnd('\\', '/'));
@@ -3096,6 +3294,7 @@ namespace AnikiHelper.Services.WebBrowser
                     try
                     {
                         var ext = await core.Profile.AddBrowserExtensionAsync(dir);
+                        extensionDirectories[ext.Id] = dir;
                         report.AppendLine("LOADED: " + ext.Name + " | id " + ext.Id + " | " + dir);
                         logger.Info("[AnikiHelper][WebBrowser][Extensions] Loaded: " + ext.Name + " (" + dir + ")");
                     }
@@ -3311,20 +3510,48 @@ namespace AnikiHelper.Services.WebBrowser
         private string gamepadPassScriptId;
         private readonly List<CoreWebView2Frame> trackedFrames = new List<CoreWebView2Frame>();
 
+        private bool l3ChordDirty;
+        private bool l3HoldFired;
+        private const int GameModeExitHoldMs = 1000;
+
+        // Custom: L3 on its own. Tap L3 on a web page to enter game controller mode; in game
+        // mode, L3 taps go to the game and HOLDING L3 for a second returns to the cursor.
+        // Pressing R3 together with it (the keyboard chord) never toggles.
         private void HandleGameModeChord(WebBrowserGamepadInputState state)
         {
-            var both = state.LeftStickHeld && state.RightStickHeld;
-            if (both && !stickChordActive)
+            var l3 = state.LeftStickHeld;
+            if (l3 && !stickChordActive)
             {
                 stickChordActive = true;
                 stickChordStartUtc = DateTime.UtcNow;
+                l3ChordDirty = state.RightStickHeld;
+                l3HoldFired = false;
                 return;
             }
 
-            if (!both && stickChordActive)
+            if (l3 && stickChordActive)
+            {
+                if (state.RightStickHeld)
+                {
+                    l3ChordDirty = true;
+                }
+
+                if (gamepadPassthrough && !l3ChordDirty && !l3HoldFired &&
+                    (DateTime.UtcNow - stickChordStartUtc).TotalMilliseconds >= GameModeExitHoldMs)
+                {
+                    l3HoldFired = true;
+                    InvokeOnUi(ToggleGameModeCore);
+                }
+
+                return;
+            }
+
+            if (!l3 && stickChordActive)
             {
                 stickChordActive = false;
-                if (viewMode == AnikiWebBrowserViewMode.Web &&
+                if (!gamepadPassthrough && !l3ChordDirty && !l3HoldFired &&
+                    viewMode == AnikiWebBrowserViewMode.Web &&
+                    (extensionsOverlay == null || !extensionsOverlay.IsOpen) &&
                     (DateTime.UtcNow - stickChordStartUtc).TotalMilliseconds <= GameModeTapMaxMs)
                 {
                     InvokeOnUi(ToggleGameModeCore);
@@ -3443,7 +3670,7 @@ namespace AnikiHelper.Services.WebBrowser
             if (showToast)
             {
                 var text = on
-                    ? "Game controller mode — tap L3+R3 for cursor"
+                    ? "Game controller mode — hold L3 for cursor"
                     : "Cursor mode";
                 var toast =
                     "(() => { try {" +

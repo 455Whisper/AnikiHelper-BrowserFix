@@ -149,6 +149,7 @@
     <Compile Include="Services\Visualizer\VisualizerEffects.cs" />
     <Compile Include="Services\Visualizer\AnikiVisualizerService.cs" />
     <Compile Include="Services\UI\DimWatchdog.cs" />
+    <Compile Include="Services\WebBrowser\AnikiExtensionsOverlay.cs" />
     <Compile Include="Services\UI\AnikiWindowManager.cs" />
     <Compile Include="Services\Controller\AnikiControllerCommandsControl.cs" />
     <Compile Include="Services\Controller\AnikiControllerInput.cs" />
