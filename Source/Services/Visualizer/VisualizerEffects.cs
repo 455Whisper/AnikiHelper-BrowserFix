@@ -51,8 +51,8 @@ namespace AnikiHelper.Services.Visualizer
         private const double StepSeconds = 1.0 / 40;
         private const double HeightScale = 3.4;
 
-        private static readonly Color NearColor = Color.FromRgb(0xFF, 0xE0, 0x4A);
-        private static readonly Color MidColor = Color.FromRgb(0xFF, 0x4F, 0xD8);
+        private static readonly Color NearColor = Color.FromRgb(0x5E, 0xE3, 0xE8);
+        private static readonly Color MidColor = Color.FromRgb(0x4C, 0xF0, 0xC0);
         private static readonly Color FarColor = Color.FromRgb(0x3C, 0xFF, 0x8C);
 
         // Allocated once and reused: no per-frame garbage, so no periodic GC hitches.
@@ -199,7 +199,7 @@ namespace AnikiHelper.Services.Visualizer
 
         private void EnsurePens(double height)
         {
-            // Colour by screen height: near (bottom) yellow, through pink, to green at the horizon.
+            // Colour by screen height: the original blue up close, fading to green toward the horizon.
             var top = height * 0.12;
             var bottom = height;
             if (columnPen != null && Math.Abs(top - gradientTop) < 1 && Math.Abs(bottom - gradientBottom) < 1)
@@ -226,7 +226,7 @@ namespace AnikiHelper.Services.Visualizer
                 EndPoint = new Point(0, top)
             };
             brush.GradientStops.Add(new GradientStop(WithAlpha(NearColor, alpha), 0.0));
-            brush.GradientStops.Add(new GradientStop(WithAlpha(NearColor, alpha), 0.35));
+            brush.GradientStops.Add(new GradientStop(WithAlpha(NearColor, alpha), 0.40));
             brush.GradientStops.Add(new GradientStop(WithAlpha(MidColor, alpha), 0.62));
             brush.GradientStops.Add(new GradientStop(WithAlpha(FarColor, alpha), 0.85));
             brush.GradientStops.Add(new GradientStop(WithAlpha(FarColor, (byte)(alpha * 0.6)), 1.0));
