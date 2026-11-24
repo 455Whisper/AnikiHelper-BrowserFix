@@ -28,6 +28,11 @@ namespace AnikiHelper.Services.Spotify
         public string Subtitle { get; set; }
         public string ImageUrl { get; set; }
         public ICommand Play { get; set; }
+
+        /// <summary>Set on playlist rows (and Liked Songs) so X can open them.</summary>
+        public string PlaylistId { get; set; }
+        public string ContextUri { get; set; }
+        public bool IsLiked { get; set; }
     }
 
     /// <summary>
@@ -99,6 +104,18 @@ namespace AnikiHelper.Services.Spotify
         private TextBlock playlistsChevron;
         private ItemsControl recentList;
         private ItemsControl playlistList;
+        private FrameworkElement libraryView;
+        private FrameworkElement playlistView;
+        private Image playlistCover;
+        private TextBlock playlistTitle;
+        private TextBlock playlistSubtitle;
+        private TextBlock playlistStatus;
+        private ItemsControl playlistTracksList;
+        private readonly ObservableCollection<SpotifyListItem> playlistTracks = new ObservableCollection<SpotifyListItem>();
+        private IInputElement playlistReturnFocus;
+        private double playlistReturnOffset;
+        private int playlistLoadVersion;
+        private HashSet<string> hiddenPlaylists;
         private TextBlock listStatus;
         private Border toast;
         private TextBlock toastText;
@@ -999,6 +1016,14 @@ namespace AnikiHelper.Services.Spotify
             recentList = (ItemsControl)root.FindName("RecentList");
             playlistList = (ItemsControl)root.FindName("PlaylistList");
             listStatus = (TextBlock)root.FindName("ListStatus");
+            libraryView = (FrameworkElement)root.FindName("LibraryView");
+            playlistView = (FrameworkElement)root.FindName("PlaylistView");
+            playlistCover = (Image)root.FindName("PlaylistCover");
+            playlistTitle = (TextBlock)root.FindName("PlaylistTitle");
+            playlistSubtitle = (TextBlock)root.FindName("PlaylistSubtitle");
+            playlistStatus = (TextBlock)root.FindName("PlaylistStatus");
+            playlistTracksList = (ItemsControl)root.FindName("PlaylistTracks");
+            playlistTracksList.ItemsSource = playlistTracks;
             toast = (Border)root.FindName("Toast");
             toastText = (TextBlock)root.FindName("ToastText");
 
@@ -1155,7 +1180,11 @@ namespace AnikiHelper.Services.Spotify
                     }
 
                     lastBackUtc = DateTime.UtcNow;
-                    if (IsSideOpen)
+                    if (IsPlaylistViewOpen && !IsSideFocused())
+                    {
+                        ClosePlaylistView();
+                    }
+                    else if (IsSideOpen)
                     {
                         CloseSide(true);
                     }
@@ -1920,6 +1949,8 @@ namespace AnikiHelper.Services.Spotify
                         Title = "Liked Songs",
                         Subtitle = "Your library",
                         ImageUrl = null,
+                        ContextUri = likedContext,
+                        IsLiked = true,
                         Play = new RelayCommand(async () => await PlayContextAsync(likedContext, null))
                     });
                 }
@@ -1943,12 +1974,24 @@ namespace AnikiHelper.Services.Spotify
                             continue;
                         }
 
+                        // Playlists Spotify makes (Discover Weekly, Daily Mix, editorial) can't be
+                        // opened by developer apps, so they are left out; so are ones that failed before.
+                        var ownerId = (string)playlist["owner"]?["id"];
+                        var playlistId = (string)playlist["id"];
+                        if (string.Equals(ownerId, "spotify", StringComparison.OrdinalIgnoreCase) ||
+                            HiddenPlaylists.Contains(playlistId ?? string.Empty))
+                        {
+                            continue;
+                        }
+
                         var owner = (string)playlist["owner"]?["display_name"];
                         playlistItems.Add(new SpotifyListItem
                         {
                             Title = (string)playlist["name"],
                             Subtitle = "Playlist" + (string.IsNullOrEmpty(owner) ? string.Empty : " • " + owner),
                             ImageUrl = PickImage(playlist["images"] as JArray, 64),
+                            PlaylistId = playlistId,
+                            ContextUri = uri,
                             Play = new RelayCommand(async () => await PlayContextAsync(uri, null))
                         });
                     }
@@ -1968,6 +2011,313 @@ namespace AnikiHelper.Services.Spotify
                 listStatus.Visibility = Visibility.Visible;
                 listsLoaded = false;
             }
+        }
+
+        // ======================= playlist contents =======================
+
+        private bool IsSideFocused()
+        {
+            var focused = Keyboard.FocusedElement as DependencyObject;
+            return IsSideOpen && focused != null && sidePanel != null && IsInside(focused, sidePanel);
+        }
+
+        private bool IsPlaylistViewOpen
+        {
+            get { return playlistView != null && playlistView.Visibility == Visibility.Visible; }
+        }
+
+        private string HiddenPlaylistsFile
+        {
+            get { return System.IO.Path.Combine(api.DataDirectory ?? string.Empty, "hidden_playlists.json"); }
+        }
+
+        private HashSet<string> HiddenPlaylists
+        {
+            get
+            {
+                if (hiddenPlaylists == null)
+                {
+                    try
+                    {
+                        hiddenPlaylists = System.IO.File.Exists(HiddenPlaylistsFile)
+                            ? new HashSet<string>(Newtonsoft.Json.JsonConvert.DeserializeObject<List<string>>(System.IO.File.ReadAllText(HiddenPlaylistsFile)) ?? new List<string>())
+                            : new HashSet<string>();
+                    }
+                    catch
+                    {
+                        hiddenPlaylists = new HashSet<string>();
+                    }
+                }
+
+                return hiddenPlaylists;
+            }
+        }
+
+        private void HidePlaylist(SpotifyListItem item)
+        {
+            if (item == null || string.IsNullOrEmpty(item.PlaylistId))
+            {
+                return;
+            }
+
+            HiddenPlaylists.Add(item.PlaylistId);
+            try
+            {
+                System.IO.File.WriteAllText(HiddenPlaylistsFile, Newtonsoft.Json.JsonConvert.SerializeObject(HiddenPlaylists.ToList()));
+            }
+            catch
+            {
+            }
+
+            playlistItems.Remove(item);
+        }
+
+        /// <summary>X on a playlist row: show its songs in place of the library lists.</summary>
+        private bool TryOpenFocusedPlaylist()
+        {
+            var focused = Keyboard.FocusedElement as FrameworkElement;
+            if (focused == null || !IsInside(focused, playlistList))
+            {
+                return false;
+            }
+
+            var item = focused.DataContext as SpotifyListItem;
+            if (item == null || string.IsNullOrEmpty(item.ContextUri) || (!item.IsLiked && string.IsNullOrEmpty(item.PlaylistId)))
+            {
+                return false;
+            }
+
+            playlistReturnFocus = focused;
+            playlistReturnOffset = listScroll.VerticalOffset;
+            var t = OpenPlaylistAsync(item);
+            return true;
+        }
+
+        private async Task OpenPlaylistAsync(SpotifyListItem playlist)
+        {
+            var version = ++playlistLoadVersion;
+            playlistTracks.Clear();
+            playlistTitle.Text = playlist.Title;
+            playlistSubtitle.Text = "Loading...";
+            playlistStatus.Visibility = Visibility.Collapsed;
+            playlistCover.Source = null;
+            if (!string.IsNullOrEmpty(playlist.ImageUrl))
+            {
+                try
+                {
+                    playlistCover.Source = new BitmapImage(new Uri(playlist.ImageUrl));
+                }
+                catch
+                {
+                }
+            }
+
+            libraryView.Visibility = Visibility.Collapsed;
+            playlistView.Visibility = Visibility.Visible;
+            listScroll.ScrollToVerticalOffset(0);
+
+            var next = playlist.IsLiked
+                ? "/me/tracks?limit=50"
+                : "/playlists/" + playlist.PlaylistId + "/items?limit=50&additional_types=track,episode";
+            var pages = 0;
+            var total = 0;
+            try
+            {
+                while (!string.IsNullOrEmpty(next) && pages < 40)
+                {
+                    pages++;
+                    var page = await api.SendAsync(HttpMethod.Get, next);
+                    if (version != playlistLoadVersion || !IsPlaylistViewOpen)
+                    {
+                        return;
+                    }
+
+                    if (!page.Ok)
+                    {
+                        logger?.Warn("[AnikiHelper][Spotify] Opening playlist '" + playlist.Title + "' failed: HTTP " + page.Status);
+                        if (pages == 1 && !playlist.IsLiked && (page.Status == 403 || page.Status == 404))
+                        {
+                            // Spotify won't let this app read it: hide it so it isn't offered again.
+                            ClosePlaylistView();
+                            var focusTarget = NeighbourOf(playlist);
+                            HidePlaylist(playlist);
+                            ShowToast("Spotify doesn't allow opening that playlist, so it was hidden.");
+                            if (focusTarget != null)
+                            {
+                                FocusLater(focusTarget);
+                            }
+
+                            return;
+                        }
+
+                        if (pages == 1)
+                        {
+                            playlistSubtitle.Text = string.Empty;
+                            playlistStatus.Text = "Couldn't load this playlist.";
+                            playlistStatus.Visibility = Visibility.Visible;
+                            return;
+                        }
+
+                        break;
+                    }
+
+                    total = (int?)page.Body?["total"] ?? total;
+                    foreach (var entry in (page.Body?["items"] as JArray) ?? new JArray())
+                    {
+                        var track = (entry["item"] as JObject) ?? (entry["track"] as JObject);
+                        var trackUri = (string)track?["uri"];
+                        if (track == null || string.IsNullOrEmpty(trackUri))
+                        {
+                            continue;
+                        }
+
+                        var artists = track["artists"] as JArray;
+                        var subtitle = artists != null && artists.Count > 0
+                            ? string.Join(", ", artists.Select(a => (string)a["name"]))
+                            : (string)track["show"]?["name"] ?? string.Empty;
+                        var images = (track["album"]?["images"] as JArray) ?? (track["images"] as JArray);
+                        var position = playlistTracks.Count;
+                        var isLocal = (bool?)track["is_local"] == true;
+                        var context = playlist.ContextUri;
+                        playlistTracks.Add(new SpotifyListItem
+                        {
+                            Title = (string)track["name"],
+                            Subtitle = subtitle,
+                            ImageUrl = PickImage(images, 64),
+                            Play = new RelayCommand(async () =>
+                            {
+                                if (isLocal)
+                                {
+                                    await PlayContextAtPositionAsync(context, position);
+                                }
+                                else
+                                {
+                                    await PlayContextAsync(context, trackUri);
+                                }
+                            })
+                        });
+                    }
+
+                    playlistSubtitle.Text = (total > 0 ? total : playlistTracks.Count) + " songs  •  B to go back";
+                    if (pages == 1)
+                    {
+                        FocusFirstTrackSoon();
+                    }
+
+                    next = RelativeApiPath((string)page.Body?["next"]);
+                }
+
+                if (playlistTracks.Count == 0)
+                {
+                    playlistStatus.Text = "This playlist is empty.";
+                    playlistStatus.Visibility = Visibility.Visible;
+                }
+            }
+            catch (Exception ex)
+            {
+                logger?.Warn(ex, "[AnikiHelper][Spotify] Failed to load playlist contents.");
+                if (version == playlistLoadVersion && IsPlaylistViewOpen)
+                {
+                    playlistStatus.Text = "Couldn't load this playlist.";
+                    playlistStatus.Visibility = Visibility.Visible;
+                }
+            }
+        }
+
+        private static string RelativeApiPath(string next)
+        {
+            if (string.IsNullOrEmpty(next))
+            {
+                return null;
+            }
+
+            const string prefix = "https://api.spotify.com/v1";
+            return next.StartsWith(prefix, StringComparison.OrdinalIgnoreCase) ? next.Substring(prefix.Length) : next;
+        }
+
+        private void FocusFirstTrackSoon()
+        {
+            window?.Dispatcher.BeginInvoke(new Action(() =>
+            {
+                if (!IsPlaylistViewOpen || playlistTracks.Count == 0)
+                {
+                    return;
+                }
+
+                var container = playlistTracksList.ItemContainerGenerator.ContainerFromIndex(0) as DependencyObject;
+                var button = container != null ? FindChild<ButtonBase>(container) : null;
+                if (button != null)
+                {
+                    button.Focus();
+                    Keyboard.Focus(button);
+                    button.BringIntoView();
+                }
+            }), DispatcherPriority.Loaded);
+        }
+
+        private UIElement NeighbourOf(SpotifyListItem item)
+        {
+            var index = playlistItems.IndexOf(item);
+            var target = index + 1 < playlistItems.Count ? index + 1 : index - 1;
+            if (target < 0)
+            {
+                return null;
+            }
+
+            var container = playlistList.ItemContainerGenerator.ContainerFromIndex(target) as DependencyObject;
+            return container != null ? FindChild<ButtonBase>(container) : null;
+        }
+
+        private static T FindChild<T>(DependencyObject parent) where T : DependencyObject
+        {
+            for (var i = 0; i < VisualTreeHelper.GetChildrenCount(parent); i++)
+            {
+                var child = VisualTreeHelper.GetChild(parent, i);
+                var match = child as T ?? FindChild<T>(child);
+                if (match != null)
+                {
+                    return match;
+                }
+            }
+
+            return null;
+        }
+
+        /// <summary>B in the playlist view: back to the library, on the playlist that was opened.</summary>
+        private void ClosePlaylistView()
+        {
+            if (!IsPlaylistViewOpen)
+            {
+                return;
+            }
+
+            playlistLoadVersion++;
+            playlistView.Visibility = Visibility.Collapsed;
+            libraryView.Visibility = Visibility.Visible;
+            playlistTracks.Clear();
+
+            var offset = playlistReturnOffset;
+            var returnTo = playlistReturnFocus as UIElement;
+            playlistReturnFocus = null;
+            window?.Dispatcher.BeginInvoke(new Action(() =>
+            {
+                listScroll.ScrollToVerticalOffset(offset);
+                if (returnTo != null && returnTo.IsVisible)
+                {
+                    returnTo.Focus();
+                    Keyboard.Focus(returnTo);
+                }
+            }), DispatcherPriority.Loaded);
+        }
+
+        private Task PlayContextAtPositionAsync(string contextUri, int position)
+        {
+            var body = new JObject
+            {
+                ["context_uri"] = contextUri,
+                ["offset"] = new JObject { ["position"] = position }
+            };
+            return PlayerCommandAsync(HttpMethod.Put, "/me/player/play", body);
         }
 
         internal static string PickImage(JArray images, int minimumWidth)
@@ -2006,6 +2356,17 @@ namespace AnikiHelper.Services.Spotify
                 if (state.IsFullPadState)
                 {
                     HandleSticks(state);
+                    return;
+                }
+
+                if (state.BackPressed && IsPlaylistViewOpen && !IsSideFocused())
+                {
+                    if ((DateTime.UtcNow - lastBackUtc).TotalMilliseconds > 250)
+                    {
+                        lastBackUtc = DateTime.UtcNow;
+                        ClosePlaylistView();
+                    }
+
                     return;
                 }
 
@@ -2051,7 +2412,7 @@ namespace AnikiHelper.Services.Spotify
                 if (state.PreviousPressed) { var t = PreviousAsync(); }
                 if (state.NextPressed) { var t = NextAsync(); }
                 if (state.AddressPressed) { var t = ToggleLikeAsync(); }
-                if (state.KeyboardPressed) { var t = ToggleShuffleAsync(); }
+                if (state.KeyboardPressed && !TryOpenFocusedPlaylist()) { var t = ToggleShuffleAsync(); }
             });
         }
 
@@ -2486,7 +2847,26 @@ namespace AnikiHelper.Services.Spotify
       <ScrollViewer x:Name='ListScroll' Grid.Row='3' Focusable='False'
                     VerticalScrollBarVisibility='Hidden' HorizontalScrollBarVisibility='Disabled'
                     PanningMode='VerticalOnly'>
-        <StackPanel Margin='24,18,24,28'>
+        <Grid>
+        <StackPanel x:Name='PlaylistView' Margin='24,18,24,28' Visibility='Collapsed'>
+          <Grid Margin='12,0,12,14'>
+            <Grid.ColumnDefinitions>
+              <ColumnDefinition Width='Auto'/>
+              <ColumnDefinition Width='*'/>
+            </Grid.ColumnDefinitions>
+            <Border Width='96' Height='96' CornerRadius='8' Background='#2A2A2A' ClipToBounds='True'>
+              <Image x:Name='PlaylistCover' Stretch='UniformToFill' RenderOptions.BitmapScalingMode='HighQuality'/>
+            </Border>
+            <StackPanel Grid.Column='1' Margin='20,0,0,0' VerticalAlignment='Center'>
+              <TextBlock x:Name='PlaylistTitle' FontSize='30' FontWeight='Bold' Foreground='#FFFFFF' TextTrimming='CharacterEllipsis'/>
+              <TextBlock x:Name='PlaylistSubtitle' FontSize='18' Foreground='#A7A7A7' Margin='0,4,0,0' TextTrimming='CharacterEllipsis'/>
+            </StackPanel>
+          </Grid>
+          <ItemsControl x:Name='PlaylistTracks' Focusable='False' ItemTemplate='{StaticResource RowTemplate}'
+                        KeyboardNavigation.DirectionalNavigation='Continue'/>
+          <TextBlock x:Name='PlaylistStatus' Margin='12,16,0,0' FontSize='20' Foreground='#A7A7A7' Visibility='Collapsed'/>
+        </StackPanel>
+        <StackPanel x:Name='LibraryView' Margin='24,18,24,28'>
           <Button x:Name='RecentHeader' Style='{StaticResource RowBtn}'>
             <Grid>
               <TextBlock Text='Recently played' FontSize='28' FontWeight='Bold' Foreground='#FFFFFF'/>
@@ -2507,6 +2887,7 @@ namespace AnikiHelper.Services.Spotify
                         KeyboardNavigation.DirectionalNavigation='Continue'/>
           <TextBlock x:Name='ListStatus' Margin='12,16,0,0' FontSize='20' Foreground='#A7A7A7' Visibility='Collapsed'/>
         </StackPanel>
+        </Grid>
       </ScrollViewer>
     </Grid>
 
