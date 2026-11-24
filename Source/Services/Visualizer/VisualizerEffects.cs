@@ -1,7 +1,9 @@
 using System;
 using System.Collections.Generic;
 using System.Windows;
+using System.Threading.Tasks;
 using System.Windows.Media;
+using System.Windows.Media.Imaging;
 
 namespace AnikiHelper.Services.Visualizer
 {
@@ -50,23 +52,32 @@ namespace AnikiHelper.Services.Visualizer
         private const double SwayDegrees = 5;
         private const double StepSeconds = 1.0 / 40;
         private const double HeightScale = 3.4;
+        private const int MaxRenderWidth = 1280;
 
         private static readonly Color NearColor = Color.FromRgb(0x5E, 0xE3, 0xE8);
         private static readonly Color MidColor = Color.FromRgb(0x4C, 0xF0, 0xC0);
         private static readonly Color FarColor = Color.FromRgb(0x3C, 0xFF, 0x8C);
 
-        // Allocated once and reused: no per-frame garbage, so no periodic GC hitches.
         private readonly float[][] history = new float[Rows][];
-        private readonly Point[,] points = new Point[Rows, Columns];
         private readonly float[] spectrum = new float[Columns];
+        private readonly float[] pointX = new float[Rows * Columns];
+        private readonly float[] pointY = new float[Rows * Columns];
         private int newest;
         private int filled;
         private double scroll;
-        private double gradientTop = double.NaN;
-        private double gradientBottom = double.NaN;
-        private Pen glowColumnPen;
-        private Pen columnPen;
-        private Pen rowPen;
+
+        // Software surface: lines are rasterised straight into a pixel buffer, so the cost per
+        // frame stays flat no matter how tall or tangled the waves get (WPF geometry does not).
+        private int bufferWidth;
+        private int bufferHeight;
+        private int glowWidth;
+        private int glowHeight;
+        private int[] intensity;
+        private int[] glow;
+        private int[] glowTemp;
+        private int[] pixels;
+        private int[] rowColor;
+        private WriteableBitmap bitmap;
 
         public MeshGridEffect()
         {
@@ -88,8 +99,6 @@ namespace AnikiHelper.Services.Visualizer
 
         private void SampleSpectrum(AudioFrame audio)
         {
-            // Mirrored: bass in the middle, treble toward both edges, with smooth interpolation
-            // between bands so every line gets its own value.
             var half = (Columns - 1) / 2.0;
             var maxBand = AudioFrame.BandCount - 2;
             for (var c = 0; c < Columns; c++)
@@ -115,17 +124,17 @@ namespace AnikiHelper.Services.Visualizer
                 filled = Math.Min(Rows, filled + 1);
             }
 
-            // Newest row stays live between steps so peaks react immediately.
             var live = history[newest];
             for (var c = 0; c < Columns; c++)
             {
                 live[c] = Math.Max(live[c], spectrum[c]);
             }
 
-            var width = size.Width;
-            var height = size.Height;
+            EnsureBuffers(size);
+            var width = bufferWidth;
+            var height = bufferHeight;
             var focal = height * 0.9;
-            var centreX = width / 2;
+            var centreX = width / 2.0;
             var centreY = height * 0.42;
 
             var pitch = PitchDegrees * Math.PI / 180;
@@ -140,8 +149,6 @@ namespace AnikiHelper.Services.Visualizer
             {
                 var z = NearDistance + ((r - scroll) * RowSpacing);
                 var row = r < filled ? RowAt(r) : null;
-
-                // Far rows fade down slightly so the horizon reads as a soft ridge.
                 var distanceFade = 1.0 - (r / (double)Rows * 0.25);
                 for (var c = 0; c < Columns; c++)
                 {
@@ -154,90 +161,263 @@ namespace AnikiHelper.Services.Visualizer
                     var z1 = (x * sinYaw) + (z * cosYaw);
                     var y2 = (dy * cosPitch) + (z1 * sinPitch);
                     var z2 = Math.Max(0.3, (-dy * sinPitch) + (z1 * cosPitch));
-                    points[r, c] = new Point(centreX + (x1 * focal / z2), centreY - (y2 * focal / z2));
+                    var index = (r * Columns) + c;
+                    pointX[index] = (float)(centreX + (x1 * focal / z2));
+                    pointY[index] = (float)(centreY - (y2 * focal / z2));
                 }
             }
 
-            EnsurePens(height);
+            Array.Clear(intensity, 0, intensity.Length);
 
-            // Lines running into the distance: the main look. Drawn twice for a glow.
-            var columns = new StreamGeometry();
-            using (var context = columns.Open())
+            // Lines into the distance (bright) and every third cross line (faint).
+            for (var c = 0; c < Columns; c++)
             {
-                for (var c = 0; c < Columns; c++)
+                for (var r = 0; r < Rows - 1; r++)
                 {
-                    context.BeginFigure(points[Rows - 1, c], false, false);
-                    for (var r = Rows - 2; r >= 0; r--)
-                    {
-                        context.LineTo(points[r, c], true, true);
-                    }
+                    var a = (r * Columns) + c;
+                    var b = a + Columns;
+                    DrawLine(pointX[a], pointY[a], pointX[b], pointY[b], 210);
                 }
             }
 
-            columns.Freeze();
-
-            // Faint cross lines every few rows give the surface its mesh texture.
-            var rows = new StreamGeometry();
-            using (var context = rows.Open())
+            for (var r = 0; r < Rows; r += 3)
             {
-                for (var r = 0; r < Rows; r += 3)
+                for (var c = 0; c < Columns - 1; c++)
                 {
-                    context.BeginFigure(points[r, 0], false, false);
-                    for (var c = 1; c < Columns; c++)
-                    {
-                        context.LineTo(points[r, c], true, true);
-                    }
+                    var a = (r * Columns) + c;
+                    DrawLine(pointX[a], pointY[a], pointX[a + 1], pointY[a + 1], 60);
                 }
             }
 
-            rows.Freeze();
+            BuildGlow();
+            Compose();
 
-            dc.DrawGeometry(null, glowColumnPen, columns);
-            dc.DrawGeometry(null, rowPen, rows);
-            dc.DrawGeometry(null, columnPen, columns);
+            bitmap.WritePixels(new Int32Rect(0, 0, bufferWidth, bufferHeight), pixels, bufferWidth * 4, 0);
+            dc.DrawImage(bitmap, new Rect(0, 0, size.Width, size.Height));
         }
 
-        private void EnsurePens(double height)
+        private void EnsureBuffers(Size size)
         {
-            // Colour by screen height: the original blue up close, fading to green toward the horizon.
-            var top = height * 0.12;
-            var bottom = height;
-            if (columnPen != null && Math.Abs(top - gradientTop) < 1 && Math.Abs(bottom - gradientBottom) < 1)
+            var scale = Math.Min(1.0, MaxRenderWidth / Math.Max(1.0, size.Width));
+            var w = Math.Max(16, (int)(size.Width * scale));
+            var h = Math.Max(16, (int)(size.Height * scale));
+            if (bitmap != null && w == bufferWidth && h == bufferHeight)
             {
                 return;
             }
 
-            gradientTop = top;
-            gradientBottom = bottom;
-            columnPen = new Pen(Gradient(top, bottom, 235), 1.25);
-            columnPen.Freeze();
-            glowColumnPen = new Pen(Gradient(top, bottom, 55), 4.5);
-            glowColumnPen.Freeze();
-            rowPen = new Pen(Gradient(top, bottom, 60), 0.8);
-            rowPen.Freeze();
-        }
+            bufferWidth = w;
+            bufferHeight = h;
+            glowWidth = w / 2;
+            glowHeight = h / 2;
+            intensity = new int[w * h];
+            pixels = new int[w * h];
+            glow = new int[glowWidth * glowHeight];
+            glowTemp = new int[glowWidth * glowHeight];
+            bitmap = new WriteableBitmap(w, h, 96, 96, PixelFormats.Pbgra32, null);
+            RenderOptions.SetBitmapScalingMode(bitmap, BitmapScalingMode.Linear);
 
-        private static Brush Gradient(double top, double bottom, byte alpha)
-        {
-            var brush = new LinearGradientBrush
+            // Colour per screen row: blue up close (bottom), green toward the horizon (top).
+            rowColor = new int[h];
+            var top = h * 0.12;
+            for (var y = 0; y < h; y++)
             {
-                MappingMode = BrushMappingMode.Absolute,
-                StartPoint = new Point(0, bottom),
-                EndPoint = new Point(0, top)
-            };
-            brush.GradientStops.Add(new GradientStop(WithAlpha(NearColor, alpha), 0.0));
-            brush.GradientStops.Add(new GradientStop(WithAlpha(NearColor, alpha), 0.40));
-            brush.GradientStops.Add(new GradientStop(WithAlpha(MidColor, alpha), 0.62));
-            brush.GradientStops.Add(new GradientStop(WithAlpha(FarColor, alpha), 0.85));
-            brush.GradientStops.Add(new GradientStop(WithAlpha(FarColor, (byte)(alpha * 0.6)), 1.0));
-            brush.Freeze();
-            return brush;
+                var t = Math.Max(0, Math.Min(1, (h - y) / (double)(h - top)));
+                Color color;
+                if (t < 0.40)
+                {
+                    color = NearColor;
+                }
+                else if (t < 0.62)
+                {
+                    color = Lerp(NearColor, MidColor, (t - 0.40) / 0.22);
+                }
+                else if (t < 0.85)
+                {
+                    color = Lerp(MidColor, FarColor, (t - 0.62) / 0.23);
+                }
+                else
+                {
+                    color = FarColor;
+                }
+
+                rowColor[y] = (color.R << 16) | (color.G << 8) | color.B;
+            }
         }
 
-        private static Color WithAlpha(Color color, byte alpha)
+        // Xiaolin Wu anti-aliased line, additive into the intensity buffer.
+        private void DrawLine(float x0, float y0, float x1, float y1, int strength)
         {
-            color.A = alpha;
-            return color;
+            var w = bufferWidth;
+            var h = bufferHeight;
+            if ((x0 < 0 && x1 < 0) || (y0 < 0 && y1 < 0) || (x0 >= w && x1 >= w) || (y0 >= h && y1 >= h))
+            {
+                return;
+            }
+
+            var dx = x1 - x0;
+            var dy = y1 - y0;
+            if (Math.Abs(dx) > w * 2 || Math.Abs(dy) > h * 2)
+            {
+                return;
+            }
+
+            if (Math.Abs(dx) >= Math.Abs(dy))
+            {
+                if (x1 < x0)
+                {
+                    var tx = x0; x0 = x1; x1 = tx;
+                    var ty = y0; y0 = y1; y1 = ty;
+                }
+
+                var gradient = Math.Abs(dx) < 0.0001f ? 0 : (y1 - y0) / (x1 - x0);
+                var start = Math.Max(0, (int)Math.Ceiling(x0));
+                var end = Math.Min(w - 1, (int)Math.Floor(x1));
+                var yy = y0 + (gradient * (start - x0));
+                for (var x = start; x <= end; x++, yy += gradient)
+                {
+                    var iy = (int)Math.Floor(yy);
+                    var frac = yy - iy;
+                    if (iy >= 0 && iy < h)
+                    {
+                        intensity[(iy * w) + x] += (int)(strength * (1 - frac));
+                    }
+
+                    if (iy + 1 >= 0 && iy + 1 < h)
+                    {
+                        intensity[((iy + 1) * w) + x] += (int)(strength * frac);
+                    }
+                }
+            }
+            else
+            {
+                if (y1 < y0)
+                {
+                    var tx = x0; x0 = x1; x1 = tx;
+                    var ty = y0; y0 = y1; y1 = ty;
+                }
+
+                var gradient = (x1 - x0) / (y1 - y0);
+                var start = Math.Max(0, (int)Math.Ceiling(y0));
+                var end = Math.Min(h - 1, (int)Math.Floor(y1));
+                var xx = x0 + (gradient * (start - y0));
+                for (var y = start; y <= end; y++, xx += gradient)
+                {
+                    var ix = (int)Math.Floor(xx);
+                    var frac = xx - ix;
+                    var rowStart = y * w;
+                    if (ix >= 0 && ix < w)
+                    {
+                        intensity[rowStart + ix] += (int)(strength * (1 - frac));
+                    }
+
+                    if (ix + 1 >= 0 && ix + 1 < w)
+                    {
+                        intensity[rowStart + ix + 1] += (int)(strength * frac);
+                    }
+                }
+            }
+        }
+
+        private void BuildGlow()
+        {
+            var w = bufferWidth;
+            var gw = glowWidth;
+            var gh = glowHeight;
+
+            // Half resolution copy.
+            Parallel.For(0, gh, gy =>
+            {
+                var source = gy * 2 * w;
+                var target = gy * gw;
+                for (var gx = 0; gx < gw; gx++)
+                {
+                    var s = source + (gx * 2);
+                    var sum = Math.Min(255, intensity[s]) + Math.Min(255, intensity[s + 1]) +
+                              Math.Min(255, intensity[s + w]) + Math.Min(255, intensity[s + w + 1]);
+                    glow[target + gx] = sum >> 2;
+                }
+            });
+
+            // Two box-blur passes in each direction approximate a soft gaussian glow.
+            BoxBlurHorizontal(glow, glowTemp, 4);
+            BoxBlurVertical(glowTemp, glow, 4);
+            BoxBlurHorizontal(glow, glowTemp, 4);
+            BoxBlurVertical(glowTemp, glow, 4);
+        }
+
+        private void BoxBlurHorizontal(int[] source, int[] target, int radius)
+        {
+            var gw = glowWidth;
+            var span = (radius * 2) + 1;
+            Parallel.For(0, glowHeight, y =>
+            {
+                var row = y * gw;
+                var sum = 0;
+                for (var x = -radius; x <= radius; x++)
+                {
+                    sum += source[row + Math.Max(0, Math.Min(gw - 1, x))];
+                }
+
+                for (var x = 0; x < gw; x++)
+                {
+                    target[row + x] = sum / span;
+                    sum += source[row + Math.Min(gw - 1, x + radius + 1)] - source[row + Math.Max(0, x - radius)];
+                }
+            });
+        }
+
+        private void BoxBlurVertical(int[] source, int[] target, int radius)
+        {
+            var gw = glowWidth;
+            var gh = glowHeight;
+            var span = (radius * 2) + 1;
+            Parallel.For(0, gw, x =>
+            {
+                var sum = 0;
+                for (var y = -radius; y <= radius; y++)
+                {
+                    sum += source[(Math.Max(0, Math.Min(gh - 1, y)) * gw) + x];
+                }
+
+                for (var y = 0; y < gh; y++)
+                {
+                    target[(y * gw) + x] = sum / span;
+                    sum += source[(Math.Min(gh - 1, y + radius + 1) * gw) + x] - source[(Math.Max(0, y - radius) * gw) + x];
+                }
+            });
+        }
+
+        private void Compose()
+        {
+            var w = bufferWidth;
+            var gw = glowWidth;
+            var gh = glowHeight;
+            Parallel.For(0, bufferHeight, y =>
+            {
+                var color = rowColor[y];
+                var cr = (color >> 16) & 0xFF;
+                var cg = (color >> 8) & 0xFF;
+                var cb = color & 0xFF;
+                var row = y * w;
+                var glowRow = Math.Min(gh - 1, y >> 1) * gw;
+                for (var x = 0; x < w; x++)
+                {
+                    var v = intensity[row + x] + ((glow[glowRow + Math.Min(gw - 1, x >> 1)] * 3) >> 1);
+                    if (v <= 0)
+                    {
+                        pixels[row + x] = 0;
+                        continue;
+                    }
+
+                    if (v > 255)
+                    {
+                        v = 255;
+                    }
+
+                    pixels[row + x] = (v << 24) | (((cr * v) / 255) << 16) | (((cg * v) / 255) << 8) | ((cb * v) / 255);
+                }
+            });
         }
     }
 
