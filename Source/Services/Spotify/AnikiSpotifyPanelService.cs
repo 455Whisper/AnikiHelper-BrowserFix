@@ -239,6 +239,23 @@ namespace AnikiHelper.Services.Spotify
 
         public bool IsOpen { get; private set; }
 
+        public bool IsSignedIn
+        {
+            get { return api.IsSignedIn; }
+        }
+
+        /// <summary>The raw "currently playing" response, for other views (e.g. the visualizer).</summary>
+        public async Task<JObject> FetchCurrentlyPlayingAsync()
+        {
+            if (!api.IsSignedIn)
+            {
+                return null;
+            }
+
+            var result = await api.SendAsync(HttpMethod.Get, "/me/player/currently-playing?additional_types=episode");
+            return result.Body as JObject;
+        }
+
         // ======================= open / close =======================
 
         public void Toggle(FrameworkElement anchor)
@@ -1739,7 +1756,7 @@ namespace AnikiHelper.Services.Spotify
             }
         }
 
-        private static string PickImage(JArray images, int minimumWidth)
+        internal static string PickImage(JArray images, int minimumWidth)
         {
             if (images == null || images.Count == 0)
             {

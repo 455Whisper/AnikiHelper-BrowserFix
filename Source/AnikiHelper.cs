@@ -9,6 +9,7 @@ using AnikiHelper.Services.AnikiThemeSettings;
 using AnikiHelper.Services.UI;
 using AnikiHelper.Services.WebBrowser;
 using AnikiHelper.Services.Spotify;
+using AnikiHelper.Services.Visualizer;
 using AnikiHelper.Services.VideoPlayer;
 using AnikiHelper.Services.EasterEgg;
 using AnikiHelper.Services.FirstSetup;
@@ -262,6 +263,7 @@ namespace AnikiHelper
         private readonly InGameOverlayService inGameOverlayService;
         private readonly AnikiWebBrowserService webBrowserService;
         private readonly AnikiSpotifyPanelService spotifyPanelService;
+        private readonly AnikiVisualizerService visualizerService;
         private readonly AnikiVideoPlayerService videoPlayerService;
         private Window videoLibraryManagerWindow;
         private Window videoIntroEndingManagerWindow;
@@ -8596,18 +8598,39 @@ namespace AnikiHelper
             spotifyPanelService.OpenStateChanged += isOpen =>
             {
                 SetAnikiWindowOpenState(isOpen, "Spotify");
+                if (!isOpen && visualizerService?.IsOpen == true)
+                {
+                    // The panel was opened over the visualizer: give focus back to it.
+                    var timer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(450) };
+                    timer.Tick += (s, e) =>
+                    {
+                        timer.Stop();
+                        visualizerService?.Reactivate();
+                    };
+                    timer.Start();
+                }
+            };
+
+            visualizerService = new AnikiVisualizerService(logger, spotifyPanelService);
+            visualizerService.OpenStateChanged += isOpen =>
+            {
+                SetAnikiWindowOpenState(isOpen, "Visualizer");
             };
 
             inGameOverlayService = new InGameOverlayService(
                 api,
                 Settings,
                 () => anikiWindowManager?.HasOpenWindow == true,
-                () => spotifyPanelService?.IsOpen == true || webBrowserService?.IsControllerInputActive == true,
+                () => spotifyPanelService?.IsOpen == true || visualizerService?.IsOpen == true || webBrowserService?.IsControllerInputActive == true,
                 state =>
                 {
                     if (spotifyPanelService?.IsOpen == true)
                     {
                         spotifyPanelService.ProcessControllerInput(state);
+                    }
+                    else if (visualizerService?.IsOpen == true)
+                    {
+                        visualizerService.ProcessControllerInput(state);
                     }
                     else
                     {
@@ -8725,6 +8748,7 @@ namespace AnikiHelper
                     anikiWindowManager?.HasOpenWindow == true ||
                     webBrowserService?.IsControllerInputActive == true ||
                     spotifyPanelService?.IsOpen == true ||
+                    visualizerService?.IsOpen == true ||
                     Settings?.IsWebBrowserOpen == true ||
                     Settings?.FirstSetup?.IsActive == true ||
                     inGameOverlayService?.IsOverlayOpenOrOpening == true,
@@ -16901,6 +16925,26 @@ namespace AnikiHelper
             webBrowserService?.Close();
         }
 
+        public void ToggleVisualizer()
+        {
+            try
+            {
+                Action toggle = () => visualizerService?.Toggle();
+                if (visualizerService?.IsOpen != true &&
+                    anikiWindowManager?.HasOpenWindow == true &&
+                    anikiWindowManager.CloseTopWindowForExternalHandoff(toggle))
+                {
+                    return;
+                }
+
+                toggle();
+            }
+            catch (Exception ex)
+            {
+                logger.Warn(ex, "[AnikiHelper] Failed to toggle the visualizer.");
+            }
+        }
+
         public void ToggleSpotifyPanel(object anchor)
         {
             try
@@ -17927,6 +17971,7 @@ namespace AnikiHelper
                     var stillOpen = anikiWindowManager?.HasOpenWindow == true ||
                                     webBrowserService?.IsOpen == true ||
                                     spotifyPanelService?.IsOpen == true ||
+                                    visualizerService?.IsOpen == true ||
                                     IsNativeFullscreenSettingsWindowVisible();
 
                     if (stillOpen)
@@ -23414,6 +23459,7 @@ namespace AnikiHelper
                 global::AnikiHelper.AnikiLog.Debug(logger, "AnikiHelper shutdown: before webBrowserService.Dispose");
                 webBrowserService?.Dispose();
                 global::AnikiHelper.AnikiLog.Debug(logger, "AnikiHelper shutdown: after webBrowserService.Dispose");
+                try { visualizerService?.Dispose(); } catch { }
                 try { spotifyPanelService?.Dispose(); } catch { }
             }
             catch (Exception e)

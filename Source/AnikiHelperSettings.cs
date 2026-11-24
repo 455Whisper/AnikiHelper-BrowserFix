@@ -2057,6 +2057,9 @@ namespace AnikiHelper
         public RelayCommand<object> OpenSpotifyPanelCommand { get; }
 
         [DontSerialize]
+        public RelayCommand OpenVisualizerCommand { get; }
+
+        [DontSerialize]
         public RelayCommand OpenWebBrowserHomeCommand { get; }
 
         [DontSerialize]
@@ -8268,6 +8271,10 @@ namespace AnikiHelper
 
             OpenSpotifyPanelCommand = new RelayCommand<object>(
                 anchor => plugin?.ToggleSpotifyPanel(anchor)
+            );
+
+            OpenVisualizerCommand = new RelayCommand(
+                () => plugin?.ToggleVisualizer()
             );
 
             OpenWebBrowserHomeCommand = new RelayCommand(

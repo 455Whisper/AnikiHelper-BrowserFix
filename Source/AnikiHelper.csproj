@@ -145,6 +145,9 @@
     <Compile Include="Services\Spotify\AnikiSpotifyPanelService.cs" />
     <Compile Include="Services\Spotify\SpotifyNowPlayingToast.cs" />
     <Compile Include="Services\Spotify\AudioMixerSource.cs" />
+    <Compile Include="Services\Visualizer\AudioSpectrumAnalyzer.cs" />
+    <Compile Include="Services\Visualizer\VisualizerEffects.cs" />
+    <Compile Include="Services\Visualizer\AnikiVisualizerService.cs" />
     <Compile Include="Services\UI\AnikiWindowManager.cs" />
     <Compile Include="Services\Controller\AnikiControllerCommandsControl.cs" />
     <Compile Include="Services\Controller\AnikiControllerInput.cs" />
