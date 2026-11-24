@@ -93,7 +93,7 @@ namespace AnikiHelper.Services.Visualizer
                 {
                     // Mirror the spectrum: bass in the centre, treble toward both edges.
                     var fromCentre = Math.Abs((c - ((Columns - 1) / 2.0)) / ((Columns - 1) / 2.0));
-                    var band = (int)Math.Min(AudioFrame.BandCount - 1, fromCentre * 48);
+                    var band = (int)Math.Min(AudioFrame.BandCount - 1, fromCentre * (AudioFrame.BandCount - 4));
                     snapshot[c] = audio.Bands[band];
                 }
 
@@ -105,7 +105,7 @@ namespace AnikiHelper.Services.Visualizer
             for (var c = 0; c < Columns; c++)
             {
                 var fromCentre = Math.Abs((c - ((Columns - 1) / 2.0)) / ((Columns - 1) / 2.0));
-                var band = (int)Math.Min(AudioFrame.BandCount - 1, fromCentre * 48);
+                var band = (int)Math.Min(AudioFrame.BandCount - 1, fromCentre * (AudioFrame.BandCount - 4));
                 live[c] = Math.Max(live[c], audio.Bands[band]);
             }
 
@@ -122,7 +122,7 @@ namespace AnikiHelper.Services.Visualizer
             var sinPitch = Math.Sin(pitch);
             var cosYaw = Math.Cos(yaw);
             var sinYaw = Math.Sin(yaw);
-            var cameraHeight = CameraHeight + (audio.Beat * 0.15);
+            var cameraHeight = CameraHeight + (audio.Beat * 0.15) + (audio.Onset * 0.12);
 
             for (var r = 0; r < Rows; r++)
             {
@@ -132,7 +132,7 @@ namespace AnikiHelper.Services.Visualizer
                 {
                     var x = ((c / (double)(Columns - 1)) * 2 - 1) * Spread;
                     var amplitude = row == null ? 0 : row[c];
-                    var y = amplitude * amplitude * 2.2;
+                    var y = Math.Pow(amplitude, 1.25) * 2.7;
 
                     var dy = y - cameraHeight;
                     var x1 = (x * cosYaw) - (z * sinYaw);
@@ -241,7 +241,7 @@ namespace AnikiHelper.Services.Visualizer
             }
 
             head = (head + 1) % HistoryLength;
-            ringHistory[head] = Math.Min(1f, (audio.Bass * 0.65f) + (audio.Mid * 0.35f) + (audio.Beat * 0.35f));
+            ringHistory[head] = Math.Min(1f, (audio.Bass * 0.45f) + (audio.Vocal * 0.45f) + (audio.Onset * 0.3f) + (audio.Beat * 0.25f));
 
             var centre = new Point(size.Width / 2, size.Height / 2);
             var maxDistance = Math.Sqrt((centre.X * centre.X) + (centre.Y * centre.Y));
@@ -311,10 +311,10 @@ namespace AnikiHelper.Services.Visualizer
                 Create();
             }
 
-            burst = Math.Max(burst * Math.Exp(-3.5 * delta), audio.Beat);
+            burst = Math.Max(burst * Math.Exp(-3.5 * delta), Math.Max(audio.Beat, audio.Onset * 0.7));
             var centre = new Point(size.Width / 2, size.Height / 2);
             var scale = Math.Min(size.Width, size.Height) / 1080.0;
-            var swirl = 0.25 + (audio.Mid * 1.8);
+            var swirl = 0.25 + (audio.Vocal * 2.2);
 
             for (var i = 0; i < particles.Length; i++)
             {

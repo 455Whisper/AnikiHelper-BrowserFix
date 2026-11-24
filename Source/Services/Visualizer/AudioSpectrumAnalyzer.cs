@@ -18,6 +18,12 @@ namespace AnikiHelper.Services.Visualizer
         public float Energy;
         /// <summary>1 right on a detected beat, decaying to 0.</summary>
         public float Beat;
+
+        /// <summary>Voice range (about 250 Hz - 3.5 kHz) relative to its own recent range.</summary>
+        public float Vocal;
+
+        /// <summary>Any new sound starting (spectral flux), not just drums.</summary>
+        public float Onset;
     }
 
     /// <summary>
@@ -29,8 +35,8 @@ namespace AnikiHelper.Services.Visualizer
         // 1024 samples (~21 ms) per analysis, run every 256 new samples (~5 ms): low delay.
         private const int FftLength = 1024;
         private const int FftPower = 10;
-        private const float MinFrequency = 30f;
-        private const float MaxFrequency = 16000f;
+        private const float MinFrequency = 50f;
+        private const float MaxFrequency = 14000f;
 
         private readonly ILogger logger;
         private readonly object sync = new object();
@@ -40,6 +46,11 @@ namespace AnikiHelper.Services.Visualizer
         private readonly float[] rawBands = new float[AudioFrame.BandCount];
         private readonly float[] latestBands = new float[AudioFrame.BandCount];
         private readonly float[] bandPeaks = new float[AudioFrame.BandCount];
+        private readonly float[] bandFloors = new float[AudioFrame.BandCount];
+        private readonly float[] previousLevels = new float[AudioFrame.BandCount];
+        private float latestOnset;
+        private float onsetPeak = 0.05f;
+        private float smoothOnset;
         private readonly float[] smoothBands = new float[AudioFrame.BandCount];
         private int ringPosition;
         private int samplesSinceFft;
@@ -257,6 +268,7 @@ namespace AnikiHelper.Services.Visualizer
 
             var binHz = (float)sampleRate / FftLength;
             var ratio = Math.Log(MaxFrequency / MinFrequency);
+            float flux = 0;
             for (var b = 0; b < AudioFrame.BandCount; b++)
             {
                 var lowHz = MinFrequency * (float)Math.Exp(ratio * b / AudioFrame.BandCount);
@@ -273,13 +285,32 @@ namespace AnikiHelper.Services.Visualizer
                 // Compress the range so quiet and loud parts both show movement.
                 var level = (float)Math.Max(0, (20 * Math.Log10(magnitude + 1e-7) + 80) / 65);
 
-                // Per-band auto gain: each band is scaled against its own recent peak.
-                bandPeaks[b] = Math.Max(level, bandPeaks[b] * 0.9985f);
-                rawBands[b] = Math.Min(1f, level / Math.Max(0.35f, bandPeaks[b]));
+                // Each band tracks its own quiet floor and loud peak, and shows where it sits between
+                // them. Vocals, synths and effects then move as much as drums do, instead of
+                // hovering near the top because they are never as loud as the kick.
+                bandPeaks[b] = Math.Max(level, bandPeaks[b] - ((bandPeaks[b] - bandFloors[b]) * 0.0012f));
+                bandFloors[b] = level < bandFloors[b] ? level : bandFloors[b] + ((level - bandFloors[b]) * 0.0015f);
+                var range = Math.Max(0.10f, bandPeaks[b] - bandFloors[b]);
+                var contrast = Math.Max(0f, Math.Min(1f, (level - bandFloors[b]) / range));
+                var absolute = Math.Min(1f, level / Math.Max(0.3f, bandPeaks[b]));
+
+                // A band getting louder right now (a syllable, a note, a hit) gets an extra kick.
+                var rise = Math.Max(0f, level - previousLevels[b]);
+                previousLevels[b] = level;
+                if (b >= 10)
+                {
+                    flux += rise;
+                }
+
+                rawBands[b] = Math.Min(1f, (contrast * 0.7f) + (absolute * absolute * 0.3f) + (rise / range * 0.9f));
             }
+
+            onsetPeak = Math.Max(flux, onsetPeak * 0.997f);
+            var onset = Math.Min(1f, flux / Math.Max(0.04f, onsetPeak));
 
             lock (sync)
             {
+                latestOnset = onset;
                 Array.Copy(rawBands, latestBands, rawBands.Length);
                 lastDataUtc = DateTime.UtcNow;
             }
@@ -326,6 +357,15 @@ namespace AnikiHelper.Services.Visualizer
             frame.Bass = Math.Max(smoothTimeBass, Average(frame.Bands, 0, 8) * 0.8f);
             frame.Mid = Average(frame.Bands, 8, 34);
             frame.Treble = Average(frame.Bands, 34, AudioFrame.BandCount);
+            frame.Vocal = Average(frame.Bands, 18, 44);
+            float onsetTarget;
+            lock (sync)
+            {
+                onsetTarget = latestOnset;
+            }
+
+            smoothOnset = onsetTarget >= smoothOnset ? onsetTarget : smoothOnset + (float)((onsetTarget - smoothOnset) * (1 - Math.Exp(-10.0 * deltaSeconds)));
+            frame.Onset = smoothOnset;
             frame.Energy = (frame.Bass * 0.5f) + (frame.Mid * 0.35f) + (frame.Treble * 0.15f);
 
             bassAverage += (float)((frame.Bass - bassAverage) * (1 - Math.Exp(-1.5 * deltaSeconds)));
