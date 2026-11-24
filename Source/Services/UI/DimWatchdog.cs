@@ -114,8 +114,74 @@ namespace AnikiHelper.Services.UI
                     logger?.Warn(ex, "[AnikiHelper][DimCheck] Restore failed.");
                 }
 
-                Later(1500, () => Scan("after " + description + " closed"));
+                Later(1500, () =>
+                {
+                    ClearStuckChildOpened(main);
+                    Scan("after " + description + " closed");
+                });
+                Later(3000, () => ClearStuckChildOpened(main));
             });
+        }
+
+        /// <summary>
+        /// Playnite's fullscreen window shows a dark overlay (BorderDim) while its ChildOpened flag
+        /// is set. Opening and closing several progress windows quickly (game import) can leave
+        /// the flag stuck on with nothing open. Clear it when no Playnite popup is actually showing.
+        /// </summary>
+        private void ClearStuckChildOpened(Window main)
+        {
+            try
+            {
+                if (main == null || !main.IsVisible)
+                {
+                    return;
+                }
+
+                foreach (Window other in Application.Current.Windows)
+                {
+                    if (other != main && other.IsVisible && other.GetType().FullName.StartsWith("Playnite.", StringComparison.Ordinal))
+                    {
+                        return;
+                    }
+                }
+
+                var type = main.GetType();
+                while (type != null)
+                {
+                    var field = type.GetField("ChildOpenedProperty", System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static);
+                    var dp = field?.GetValue(null) as DependencyProperty;
+                    if (dp != null)
+                    {
+                        if (Equals(main.GetValue(dp), true))
+                        {
+                            main.SetCurrentValue(dp, false);
+                            logger?.Info("[AnikiHelper][DimCheck] Cleared stuck ChildOpened (dark overlay) on " + type.Name + ".");
+                        }
+
+                        return;
+                    }
+
+                    var property = type.GetProperty("ChildOpened", System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.DeclaredOnly);
+                    if (property != null && property.PropertyType == typeof(bool))
+                    {
+                        if (Equals(property.GetValue(main), true) && property.CanWrite)
+                        {
+                            property.SetValue(main, false);
+                            logger?.Info("[AnikiHelper][DimCheck] Cleared stuck ChildOpened (dark overlay) on " + type.Name + ".");
+                        }
+
+                        return;
+                    }
+
+                    type = type.BaseType;
+                }
+
+                logger?.Info("[AnikiHelper][DimCheck] ChildOpened not found on " + main.GetType().FullName);
+            }
+            catch (Exception ex)
+            {
+                logger?.Warn(ex, "[AnikiHelper][DimCheck] Could not clear ChildOpened.");
+            }
         }
 
         private void Scan(string reason)

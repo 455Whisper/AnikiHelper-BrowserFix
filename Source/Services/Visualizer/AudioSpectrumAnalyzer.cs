@@ -120,18 +120,102 @@ namespace AnikiHelper.Services.Visualizer
             get { return capture != null; }
         }
 
+        private readonly object captureLock = new object();
+        private MMDeviceEnumerator notifyEnumerator;
+        private DefaultDeviceWatcher deviceWatcher;
+        private System.Threading.Timer restartTimer;
+        private bool running;
+
+        private sealed class DefaultDeviceWatcher : NAudio.CoreAudioApi.Interfaces.IMMNotificationClient
+        {
+            private readonly Action changed;
+
+            public DefaultDeviceWatcher(Action changed)
+            {
+                this.changed = changed;
+            }
+
+            public void OnDeviceStateChanged(string deviceId, DeviceState newState) { }
+
+            public void OnDeviceAdded(string pwstrDeviceId) { }
+
+            public void OnDeviceRemoved(string deviceId) { }
+
+            public void OnDefaultDeviceChanged(DataFlow flow, Role role, string defaultDeviceId)
+            {
+                if (flow == DataFlow.Render)
+                {
+                    changed();
+                }
+            }
+
+            public void OnPropertyValueChanged(string pwstrDeviceId, PropertyKey key) { }
+        }
+
         public void Start()
         {
             Stop();
+            running = true;
+            if (!timerRaised)
+            {
+                // Lets the capture loop wake every few ms instead of every ~15 ms.
+                timeBeginPeriod(1);
+                timerRaised = true;
+            }
+
+            // Follow the Windows output device: when it changes, listen to the new one.
             try
             {
-                if (!timerRaised)
+                notifyEnumerator = new MMDeviceEnumerator();
+                deviceWatcher = new DefaultDeviceWatcher(ScheduleRestart);
+                notifyEnumerator.RegisterEndpointNotificationCallback(deviceWatcher);
+            }
+            catch (Exception ex)
+            {
+                logger?.Warn(ex, "[AnikiHelper][Visualizer] Could not watch for output device changes.");
+            }
+
+            StartCapture();
+        }
+
+        private void ScheduleRestart()
+        {
+            // Called on a COM thread; debounce (Windows fires once per role) and restart off it.
+            lock (captureLock)
+            {
+                if (!running)
                 {
-                    // Lets the capture loop wake every few ms instead of every ~15 ms.
-                    timeBeginPeriod(1);
-                    timerRaised = true;
+                    return;
                 }
 
+                if (restartTimer == null)
+                {
+                    restartTimer = new System.Threading.Timer(_ =>
+                    {
+                        lock (captureLock)
+                        {
+                            if (!running)
+                            {
+                                return;
+                            }
+
+                            logger?.Info("[AnikiHelper][Visualizer] Output device changed, switching capture.");
+                            StopCapture();
+                            StartCapture();
+                        }
+                    }, null, 300, System.Threading.Timeout.Infinite);
+                }
+                else
+                {
+                    restartTimer.Change(300, System.Threading.Timeout.Infinite);
+                }
+            }
+        }
+
+        private void StartCapture()
+        {
+            try
+            {
                 capture = new LowLatencyLoopbackCapture();
                 sampleRate = capture.WaveFormat.SampleRate;
                 SetupBassFilter(150, sampleRate);
@@ -141,6 +225,9 @@ namespace AnikiHelper.Services.Visualizer
                     if (e.Exception != null)
                     {
                         logger?.Warn(e.Exception, "[AnikiHelper][Visualizer] Audio capture stopped.");
+
+                        // Usually the device went away (unplugged / switched): pick up the new default.
+                        ScheduleRestart();
                     }
                 };
                 capture.StartRecording();
@@ -168,12 +255,40 @@ namespace AnikiHelper.Services.Visualizer
 
         public void Stop()
         {
+            lock (captureLock)
+            {
+                running = false;
+                restartTimer?.Dispose();
+                restartTimer = null;
+            }
+
+            try
+            {
+                if (notifyEnumerator != null && deviceWatcher != null)
+                {
+                    notifyEnumerator.UnregisterEndpointNotificationCallback(deviceWatcher);
+                }
+
+                (notifyEnumerator as IDisposable)?.Dispose();
+            }
+            catch
+            {
+            }
+
+            notifyEnumerator = null;
+            deviceWatcher = null;
+
             if (timerRaised)
             {
                 timeEndPeriod(1);
                 timerRaised = false;
             }
 
+            StopCapture();
+        }
+
+        private void StopCapture()
+        {
             var current = capture;
             capture = null;
             if (current == null)
