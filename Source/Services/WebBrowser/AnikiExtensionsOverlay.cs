@@ -147,10 +147,8 @@ namespace AnikiHelper.Services.WebBrowser
             Grid.SetRow(popupHost, 1);
             popupView.Children.Add(popupHost);
 
-            var content = new Grid();
-            content.Children.Add(listView);
-            content.Children.Add(popupView);
-
+            // The list panel (right) and, when an extension is opened, its popup panel to the
+            // left of it, like Chrome's extension popups.
             root = new Border
             {
                 Width = 476,
@@ -158,34 +156,58 @@ namespace AnikiHelper.Services.WebBrowser
                 Background = PanelBrush,
                 BorderBrush = Frozen(Color.FromArgb(40, 255, 255, 255)),
                 BorderThickness = new Thickness(1),
+                VerticalAlignment = VerticalAlignment.Top,
+                Effect = new DropShadowEffect { BlurRadius = 28, ShadowDepth = 6, Opacity = 0.55, Color = Colors.Black },
+                Child = listView
+            };
+
+            var popupContent = new Grid();
+            popupContent.Children.Add(popupView);
+            popupContent.SizeChanged += (s, e) =>
+            {
+                popupContent.Clip = new RectangleGeometry(new Rect(0, 0, popupContent.ActualWidth, popupContent.ActualHeight), 13, 13);
+            };
+            popupBorder = new Border
+            {
+                CornerRadius = new CornerRadius(14),
+                Background = PanelBrush,
+                BorderBrush = Frozen(Color.FromArgb(40, 255, 255, 255)),
+                BorderThickness = new Thickness(1),
+                VerticalAlignment = VerticalAlignment.Top,
+                Margin = new Thickness(0, 0, 14, 0),
+                Visibility = Visibility.Collapsed,
+                Effect = new DropShadowEffect { BlurRadius = 28, ShadowDepth = 6, Opacity = 0.55, Color = Colors.Black },
+                Child = popupContent
+            };
+
+            container = new StackPanel
+            {
+                Orientation = Orientation.Horizontal,
                 HorizontalAlignment = HorizontalAlignment.Right,
                 VerticalAlignment = VerticalAlignment.Top,
                 Margin = new Thickness(0, 14, 18, 0),
-                Visibility = Visibility.Collapsed,
-                Effect = new DropShadowEffect { BlurRadius = 28, ShadowDepth = 6, Opacity = 0.55, Color = Colors.Black },
-                Child = content
+                Visibility = Visibility.Collapsed
             };
-
-            // Rounded clipping for the embedded page too.
-            content.SizeChanged += (s, e) =>
-            {
-                content.Clip = new RectangleGeometry(new Rect(0, 0, content.ActualWidth, content.ActualHeight), 13, 13);
-            };
+            container.Children.Add(popupBorder);
+            container.Children.Add(root);
         }
+
+        private readonly StackPanel container;
+        private readonly Border popupBorder;
 
         public FrameworkElement Element
         {
-            get { return root; }
+            get { return container; }
         }
 
         public bool IsOpen
         {
-            get { return root.Visibility == Visibility.Visible; }
+            get { return container.Visibility == Visibility.Visible; }
         }
 
         public bool IsPopupOpen
         {
-            get { return IsOpen && popupView.Visibility == Visibility.Visible; }
+            get { return IsOpen && popupBorder.Visibility == Visibility.Visible; }
         }
 
         public void Open()
@@ -196,15 +218,15 @@ namespace AnikiHelper.Services.WebBrowser
             }
 
             ShowList();
-            root.Visibility = Visibility.Visible;
-            root.BeginAnimation(UIElement.OpacityProperty, new System.Windows.Media.Animation.DoubleAnimation(0, 1, TimeSpan.FromMilliseconds(140)));
+            container.Visibility = Visibility.Visible;
+            container.BeginAnimation(UIElement.OpacityProperty, new System.Windows.Media.Animation.DoubleAnimation(0, 1, TimeSpan.FromMilliseconds(140)));
             var t = LoadAsync();
         }
 
         public void Close()
         {
             ClosePopup();
-            root.Visibility = Visibility.Collapsed;
+            container.Visibility = Visibility.Collapsed;
         }
 
         // ---------------- navigation ----------------
@@ -307,7 +329,8 @@ namespace AnikiHelper.Services.WebBrowser
 
         private void ShowList()
         {
-            popupView.Visibility = Visibility.Collapsed;
+            popupBorder.Visibility = Visibility.Collapsed;
+            popupView.Visibility = Visibility.Visible;
             listView.Visibility = Visibility.Visible;
         }
 
@@ -359,7 +382,7 @@ namespace AnikiHelper.Services.WebBrowser
 
             status.Text = "No extensions yet. Put unpacked extensions (folders with a manifest.json) in the extensions folder, then reopen the browser.";
             status.Visibility = rows.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
-            root.Dispatcher.BeginInvoke(new Action(FocusFirst), System.Windows.Threading.DispatcherPriority.Loaded);
+            container.Dispatcher.BeginInvoke(new Action(FocusFirst), System.Windows.Threading.DispatcherPriority.Loaded);
         }
 
         private void AddRow(CoreWebView2BrowserExtension extension, ExtensionInfo info)
@@ -511,8 +534,9 @@ namespace AnikiHelper.Services.WebBrowser
             try
             {
                 popupTitle.Text = title;
-                listView.Visibility = Visibility.Collapsed;
-                popupView.Visibility = Visibility.Visible;
+                popupHost.Width = 460;
+                popupHost.Height = 600;
+                popupBorder.Visibility = Visibility.Visible;
 
                 if (popupWeb == null || popupWeb.CoreWebView2 == null)
                 {
@@ -533,8 +557,45 @@ namespace AnikiHelper.Services.WebBrowser
                     }
 
                     // The view must be visible and laid out before its engine can start.
-                    await root.Dispatcher.InvokeAsync(() => { }, System.Windows.Threading.DispatcherPriority.Loaded);
+                    if (!popupWeb.IsLoaded)
+                    {
+                        var loaded = new TaskCompletionSource<bool>();
+                        RoutedEventHandler onLoaded = null;
+                        onLoaded = (s, e) => { popupWeb.Loaded -= onLoaded; loaded.TrySetResult(true); };
+                        popupWeb.Loaded += onLoaded;
+                        await Task.WhenAny(loaded.Task, Task.Delay(3000));
+                    }
+
                     await popupWeb.EnsureCoreWebView2Async(env);
+                    if (popupWeb.CoreWebView2 != null)
+                    {
+                        // Size the panel to the popup's content, like Chrome does (within limits).
+                        popupWeb.CoreWebView2.NavigationCompleted += async (s, e) =>
+                        {
+                            try
+                            {
+                                var json = await popupWeb.CoreWebView2.ExecuteScriptAsync(
+                                    "JSON.stringify([Math.max(document.documentElement.scrollWidth, document.body ? document.body.scrollWidth : 0), Math.max(document.documentElement.scrollHeight, document.body ? document.body.scrollHeight : 0)])");
+                                var size = Newtonsoft.Json.Linq.JArray.Parse(Newtonsoft.Json.JsonConvert.DeserializeObject<string>(json));
+                                var w = (double)size[0];
+                                var h = (double)size[1];
+                                if (w > 50 && h > 50)
+                                {
+                                    popupHost.Width = Math.Max(320, Math.Min(800, w + 4));
+                                    popupHost.Height = Math.Max(240, Math.Min(860, h + 4));
+                                }
+                            }
+                            catch
+                            {
+                            }
+                        };
+                        popupWeb.CoreWebView2.NewWindowRequested += (s, e) =>
+                        {
+                            // "Settings" buttons inside popups open a tab: show it in the main browser.
+                            e.Handled = true;
+                            openInBrowser?.Invoke(e.Uri);
+                        };
+                    }
                     if (popupWeb.CoreWebView2 == null)
                     {
                         throw new InvalidOperationException("Popup view didn't start.");
@@ -556,14 +617,14 @@ namespace AnikiHelper.Services.WebBrowser
         /// <summary>B while a popup/settings page is shown: back to the list.</summary>
         public void ClosePopup()
         {
-            if (popupView.Visibility != Visibility.Visible)
+            if (popupBorder.Visibility != Visibility.Visible)
             {
                 return;
             }
 
             try { popupWeb?.CoreWebView2?.Navigate("about:blank"); } catch { }
             ShowList();
-            root.Dispatcher.BeginInvoke(new Action(FocusFirst), System.Windows.Threading.DispatcherPriority.Loaded);
+            container.Dispatcher.BeginInvoke(new Action(FocusFirst), System.Windows.Threading.DispatcherPriority.Loaded);
         }
 
         private void OpenFolder()

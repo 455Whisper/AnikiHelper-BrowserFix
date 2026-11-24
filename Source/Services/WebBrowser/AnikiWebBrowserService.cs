@@ -458,6 +458,12 @@ namespace AnikiHelper.Services.WebBrowser
             }
 
             // First controller input restores browser focus; close still works as a failsafe.
+            if (!browserWindowActive && IsBrowserOrPageForeground())
+            {
+                // Recover silently: the page engine had focus, the browser never really left.
+                browserWindowActive = true;
+            }
+
             if (!browserWindowActive)
             {
                 pointerController.SuspendInput();
@@ -2183,8 +2189,11 @@ namespace AnikiHelper.Services.WebBrowser
             CleanupCore(sender as Window, webView);
         }
 
+        private IntPtr browserHostHandle;
+
         private void WindowHost_Activated(object sender, EventArgs e)
         {
+            try { browserHostHandle = new System.Windows.Interop.WindowInteropHelper(windowHost).Handle; } catch { }
             browserWindowActive = true;
             AcquireExclusiveControllerProcessing();
             Interlocked.Exchange(ref controllerFocusRecoveryQueued, 0);
@@ -2209,8 +2218,62 @@ namespace AnikiHelper.Services.WebBrowser
             }
         }
 
+        [DllImport("user32.dll")]
+        private static extern IntPtr GetForegroundWindow();
+
+        [DllImport("user32.dll")]
+        private static extern IntPtr GetAncestor(IntPtr hwnd, uint flags);
+
+        [DllImport("user32.dll")]
+        private static extern uint GetWindowThreadProcessId(IntPtr hwnd, out uint processId);
+
+        /// <summary>
+        /// True when the foreground window is the browser itself or the page engine's own window
+        /// (WebView2 runs pages in msedgewebview2 processes, which take keyboard focus on click).
+        /// </summary>
+        private bool IsBrowserOrPageForeground()
+        {
+            try
+            {
+                // Called from the controller thread too: only use the cached handle here.
+                var host = browserHostHandle;
+                if (host == IntPtr.Zero || !IsOpen)
+                {
+                    return false;
+                }
+
+                var foreground = GetForegroundWindow();
+                if (foreground == IntPtr.Zero)
+                {
+                    return false;
+                }
+
+                if (foreground == host || GetAncestor(foreground, 2 /* GA_ROOT */) == host || GetAncestor(foreground, 3 /* GA_ROOTOWNER */) == host)
+                {
+                    return true;
+                }
+
+                uint pid;
+                GetWindowThreadProcessId(foreground, out pid);
+                using (var process = System.Diagnostics.Process.GetProcessById((int)pid))
+                {
+                    return string.Equals(process.ProcessName, "msedgewebview2", StringComparison.OrdinalIgnoreCase);
+                }
+            }
+            catch
+            {
+                return false;
+            }
+        }
+
         private void WindowHost_Deactivated(object sender, EventArgs e)
         {
+            if (IsBrowserOrPageForeground())
+            {
+                // Focus just moved into the web page itself; the browser is still in front.
+                return;
+            }
+
             browserWindowActive = false;
             // Let a native dialog or virtual keyboard that takes focus use Playnite's normal
             // controller routing. Home will reacquire exclusivity when the browser activates.
@@ -2879,10 +2942,10 @@ namespace AnikiHelper.Services.WebBrowser
 
         private static bool IsAllowedInternalAddress(string address)
         {
-            return string.Equals(
-                (address ?? string.Empty).Trim(),
-                "about:blank",
-                StringComparison.OrdinalIgnoreCase);
+            var trimmed = (address ?? string.Empty).Trim();
+            // Custom: extension pages (settings / popups) are allowed too.
+            return string.Equals(trimmed, "about:blank", StringComparison.OrdinalIgnoreCase) ||
+                   trimmed.StartsWith("chrome-extension://", StringComparison.OrdinalIgnoreCase);
         }
 
         private static string GetDisplayHost(string address)
