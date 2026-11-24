@@ -312,6 +312,7 @@ namespace AnikiHelper.Services.Spotify
                     PositionWindow(anchor);
                     closing = false;
                     IsOpen = true;
+                    RememberPlayniteFocus();
                     window.BeginAnimation(Window.TopProperty, null);
                     window.Top = targetTop - window.Height;
                     window.Show();
@@ -437,7 +438,40 @@ namespace AnikiHelper.Services.Spotify
                 }
 
                 main.Activate();
-                main.Focus();
+
+                // Put focus back on whatever was selected before the panel opened. Focusing the
+                // window itself leaves nothing selected, and the theme dims the library/hub then.
+                var previous = previousPlayniteFocus as UIElement;
+                previousPlayniteFocus = null;
+                if (previous != null)
+                {
+                    main.Dispatcher.BeginInvoke(new Action(() =>
+                    {
+                        if (previous.IsVisible && previous.Focusable && previous.IsEnabled)
+                        {
+                            previous.Focus();
+                            Keyboard.Focus(previous);
+                        }
+                    }), DispatcherPriority.Input);
+                }
+            }
+            catch
+            {
+            }
+        }
+
+        private IInputElement previousPlayniteFocus;
+
+        private void RememberPlayniteFocus()
+        {
+            try
+            {
+                var main = Application.Current?.MainWindow;
+                var focused = Keyboard.FocusedElement as DependencyObject;
+                if (main != null && focused != null && main != window && Window.GetWindow(focused) == main)
+                {
+                    previousPlayniteFocus = (IInputElement)focused;
+                }
             }
             catch
             {
@@ -2077,7 +2111,7 @@ namespace AnikiHelper.Services.Spotify
             // WPF's position-based search (which could get stuck on the big play button).
             if (direction == FocusNavigationDirection.Left || direction == FocusNavigationDirection.Right)
             {
-                var row = new UIElement[] { sideToggleButton, shuffleButton, previousButton, playButton, nextButton, repeatButton };
+                var row = new UIElement[] { shuffleButton, previousButton, playButton, nextButton, repeatButton, sideToggleButton };
                 var index = Array.IndexOf(row, focused);
                 if (index >= 0)
                 {
@@ -2089,7 +2123,7 @@ namespace AnikiHelper.Services.Spotify
                     }
                     else if (next >= row.Length && IsSideOpen)
                     {
-                        // Past "repeat": continue into the volume box.
+                        // Past the arrow: continue into the volume box.
                         focused.MoveFocus(new TraversalRequest(direction));
                     }
 
@@ -2409,20 +2443,20 @@ namespace AnikiHelper.Services.Spotify
 
       <Grid Grid.Row='1' Margin='40,28,40,26'>
         <Grid.ColumnDefinitions>
-          <ColumnDefinition Width='Auto'/>
           <ColumnDefinition Width='*'/>
           <ColumnDefinition Width='*'/>
           <ColumnDefinition Width='Auto'/>
           <ColumnDefinition Width='*'/>
           <ColumnDefinition Width='*'/>
+          <ColumnDefinition Width='Auto'/>
         </Grid.ColumnDefinitions>
-        <Button x:Name='SideToggleBtn' Grid.Column='0' Style='{StaticResource IconBtn}'
-                Width='52' Height='76' FontSize='24' Foreground='#FFFFFF' Margin='-16,0,0,0'/>
-        <Button x:Name='ShuffleBtn' Grid.Column='1' Style='{StaticResource IconBtn}' FontSize='28'/>
-        <Button x:Name='PrevBtn' Grid.Column='2' Style='{StaticResource IconBtn}' FontSize='34'/>
-        <Button x:Name='PlayBtn' Grid.Column='3' Style='{StaticResource PlayBtn}'/>
-        <Button x:Name='NextBtn' Grid.Column='4' Style='{StaticResource IconBtn}' FontSize='34'/>
-        <Button x:Name='RepeatBtn' Grid.Column='5' Style='{StaticResource IconBtn}' FontSize='28'/>
+        <Button x:Name='ShuffleBtn' Grid.Column='0' Style='{StaticResource IconBtn}' FontSize='28'/>
+        <Button x:Name='PrevBtn' Grid.Column='1' Style='{StaticResource IconBtn}' FontSize='34'/>
+        <Button x:Name='PlayBtn' Grid.Column='2' Style='{StaticResource PlayBtn}'/>
+        <Button x:Name='NextBtn' Grid.Column='3' Style='{StaticResource IconBtn}' FontSize='34'/>
+        <Button x:Name='RepeatBtn' Grid.Column='4' Style='{StaticResource IconBtn}' FontSize='28'/>
+        <Button x:Name='SideToggleBtn' Grid.Column='5' Style='{StaticResource IconBtn}'
+                Width='52' Height='76' FontSize='24' Foreground='#FFFFFF' Margin='0,0,-16,0'/>
       </Grid>
 
       <Grid x:Name='ProgressTrack' Grid.Row='2' Height='4' Background='#3DFFFFFF'>

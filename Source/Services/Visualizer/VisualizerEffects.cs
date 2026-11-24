@@ -40,24 +40,43 @@ namespace AnikiHelper.Services.Visualizer
     /// </summary>
     internal sealed class MeshGridEffect : VisualEffect
     {
-        private const int Columns = 64;
+        private const int Columns = 84;
         private const int Rows = 46;
+        private const int DepthBuckets = 9;
         private const double RowSpacing = 0.55;
         private const double NearDistance = 3.2;
-        private const double Spread = 13.0;
+        private const double Spread = 22.0;
         private const double CameraHeight = 5.5;
         private const double PitchDegrees = 30;
         private const double SwayDegrees = 6;
-        private const double StepSeconds = 1.0 / 24;
+        private const double StepSeconds = 1.0 / 30;
 
-        private readonly List<float[]> history = new List<float[]>();
+        // Everything is allocated once and reused: no per-frame garbage, so no periodic
+        // garbage-collection pauses (the "lag every few seconds").
+        private readonly float[][] history = new float[Rows][];
+        private readonly Point[,] points = new Point[Rows, Columns];
+        private int newest;
+        private int filled;
         private double scroll;
-        private Pen[] rowPens;
-        private Pen[] columnPens;
+        private Pen[] bucketPens;
+        private Pen columnPen;
+
+        public MeshGridEffect()
+        {
+            for (var r = 0; r < Rows; r++)
+            {
+                history[r] = new float[Columns];
+            }
+        }
 
         public override string Name
         {
             get { return "Mesh grid"; }
+        }
+
+        private float[] RowAt(int age)
+        {
+            return history[((newest - age) % Rows + Rows) % Rows];
         }
 
         public override void Render(DrawingContext dc, Size size, AudioFrame audio, double time, double delta)
@@ -65,23 +84,29 @@ namespace AnikiHelper.Services.Visualizer
             EnsurePens();
 
             scroll += delta / StepSeconds;
-            while (scroll >= 1 || history.Count == 0)
+            while (scroll >= 1 || filled == 0)
             {
                 scroll = Math.Max(0, scroll - 1);
-                var snapshot = new float[Columns];
+                newest = (newest + 1) % Rows;
+                var snapshot = history[newest];
                 for (var c = 0; c < Columns; c++)
                 {
                     // Mirror the spectrum: bass in the centre, treble toward both edges.
                     var fromCentre = Math.Abs((c - ((Columns - 1) / 2.0)) / ((Columns - 1) / 2.0));
-                    var band = (int)Math.Min(AudioFrame.BandCount - 1, fromCentre * 44);
+                    var band = (int)Math.Min(AudioFrame.BandCount - 1, fromCentre * 48);
                     snapshot[c] = audio.Bands[band];
                 }
 
-                history.Insert(0, snapshot);
-                if (history.Count > Rows)
-                {
-                    history.RemoveAt(history.Count - 1);
-                }
+                filled = Math.Min(Rows, filled + 1);
+            }
+
+            // Keep the newest row live between steps so peaks react immediately.
+            var live = history[newest];
+            for (var c = 0; c < Columns; c++)
+            {
+                var fromCentre = Math.Abs((c - ((Columns - 1) / 2.0)) / ((Columns - 1) / 2.0));
+                var band = (int)Math.Min(AudioFrame.BandCount - 1, fromCentre * 48);
+                live[c] = Math.Max(live[c], audio.Bands[band]);
             }
 
             var width = size.Width;
@@ -99,11 +124,10 @@ namespace AnikiHelper.Services.Visualizer
             var sinYaw = Math.Sin(yaw);
             var cameraHeight = CameraHeight + (audio.Beat * 0.15);
 
-            var points = new Point[Rows, Columns];
             for (var r = 0; r < Rows; r++)
             {
                 var z = NearDistance + ((r - scroll) * RowSpacing);
-                var row = r < history.Count ? history[r] : null;
+                var row = r < filled ? RowAt(r) : null;
                 for (var c = 0; c < Columns; c++)
                 {
                     var x = ((c / (double)(Columns - 1)) * 2 - 1) * Spread;
@@ -119,27 +143,33 @@ namespace AnikiHelper.Services.Visualizer
                 }
             }
 
-            // Far rows first so near lines draw on top.
-            for (var r = Rows - 1; r >= 0; r--)
+            // Rows grouped by depth: a handful of shapes per frame instead of one per row.
+            var rowsPerBucket = (int)Math.Ceiling(Rows / (double)DepthBuckets);
+            for (var bucket = DepthBuckets - 1; bucket >= 0; bucket--)
             {
                 var geometry = new StreamGeometry();
                 using (var context = geometry.Open())
                 {
-                    context.BeginFigure(points[r, 0], false, false);
-                    for (var c = 1; c < Columns; c++)
+                    var first = bucket * rowsPerBucket;
+                    var last = Math.Min(Rows, first + rowsPerBucket);
+                    for (var r = first; r < last; r++)
                     {
-                        context.LineTo(points[r, c], true, false);
+                        context.BeginFigure(points[r, 0], false, false);
+                        for (var c = 1; c < Columns; c++)
+                        {
+                            context.LineTo(points[r, c], true, false);
+                        }
                     }
                 }
 
                 geometry.Freeze();
-                dc.DrawGeometry(null, rowPens[r], geometry);
+                dc.DrawGeometry(null, bucketPens[bucket], geometry);
             }
 
-            for (var c = 0; c < Columns; c += 2)
+            var columns = new StreamGeometry();
+            using (var context = columns.Open())
             {
-                var geometry = new StreamGeometry();
-                using (var context = geometry.Open())
+                for (var c = 0; c < Columns; c += 2)
                 {
                     context.BeginFigure(points[Rows - 1, c], false, false);
                     for (var r = Rows - 2; r >= 0; r--)
@@ -147,40 +177,34 @@ namespace AnikiHelper.Services.Visualizer
                         context.LineTo(points[r, c], true, false);
                     }
                 }
-
-                geometry.Freeze();
-                dc.DrawGeometry(null, columnPens[c], geometry);
             }
+
+            columns.Freeze();
+            dc.DrawGeometry(null, columnPen, columns);
         }
 
         private void EnsurePens()
         {
-            if (rowPens != null)
+            if (bucketPens != null)
             {
                 return;
             }
 
-            rowPens = new Pen[Rows];
-            for (var r = 0; r < Rows; r++)
+            bucketPens = new Pen[DepthBuckets];
+            for (var b = 0; b < DepthBuckets; b++)
             {
-                var depth = r / (double)(Rows - 1);
+                var depth = b / (double)(DepthBuckets - 1);
                 var color = Lerp(Cyan, Violet, depth);
-                color.A = (byte)(235 * (1 - (depth * 0.85)));
-                var pen = new Pen(Frozen(color), 1.6 - depth);
+                color.A = (byte)(235 * (1 - (depth * 0.8)));
+                var pen = new Pen(Frozen(color), 1.7 - (depth * 0.9));
                 pen.Freeze();
-                rowPens[r] = pen;
+                bucketPens[b] = pen;
             }
 
-            columnPens = new Pen[Columns];
-            for (var c = 0; c < Columns; c++)
-            {
-                var edge = Math.Abs((c / (double)(Columns - 1)) * 2 - 1);
-                var color = Lerp(Cyan, Violet, edge);
-                color.A = 90;
-                var pen = new Pen(Frozen(color), 0.9);
-                pen.Freeze();
-                columnPens[c] = pen;
-            }
+            var columnColor = Lerp(Cyan, Violet, 0.5);
+            columnColor.A = 80;
+            columnPen = new Pen(Frozen(columnColor), 0.9);
+            columnPen.Freeze();
         }
     }
 

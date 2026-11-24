@@ -335,6 +335,11 @@ namespace AnikiHelper.Services.Spotify
                             if (inUse)
                             {
                                 endpoint.MasterVolumeLevelScalar = v;
+                                float reported = -1;
+                                try { reported = endpoint.MasterVolumeLevelScalar; } catch { }
+                                logger?.Info("[AnikiHelper][Audio][VolumeCheck] Set '" + device.FriendlyName +
+                                             "' to " + v.ToString("0.00") + ", Windows now reports " + reported.ToString("0.00") +
+                                             " (hardware steps: " + SafeSteps(endpoint) + ")");
                             }
                         })
                     {
@@ -437,6 +442,18 @@ namespace AnikiHelper.Services.Spotify
                 {
                     try { entry.UpdateFromSystem(read()); } catch { }
                 }
+            }
+        }
+
+        private static string SafeSteps(AudioEndpointVolume endpoint)
+        {
+            try
+            {
+                return endpoint.StepInformation.StepCount.ToString();
+            }
+            catch
+            {
+                return "?";
             }
         }
 

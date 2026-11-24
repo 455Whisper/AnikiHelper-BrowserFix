@@ -126,6 +126,16 @@ namespace AnikiHelper.Services.Visualizer
                 {
                     EnsureWindow();
                     PositionWindow();
+                    try
+                    {
+                        var main = Application.Current?.MainWindow;
+                        var focused = Keyboard.FocusedElement as DependencyObject;
+                        previousPlayniteFocus = main != null && focused != null && Window.GetWindow(focused) == main ? focused as UIElement : null;
+                    }
+                    catch
+                    {
+                    }
+
                     closing = false;
                     IsOpen = true;
                     window.Show();
@@ -633,13 +643,27 @@ namespace AnikiHelper.Services.Visualizer
             exclusiveController = null;
         }
 
-        private static void ActivateMainWindow()
+        private UIElement previousPlayniteFocus;
+
+        private void ActivateMainWindow()
         {
             try
             {
                 var main = Application.Current?.MainWindow;
                 main?.Activate();
-                main?.Focus();
+                var previous = previousPlayniteFocus;
+                previousPlayniteFocus = null;
+                if (main != null && previous != null)
+                {
+                    main.Dispatcher.BeginInvoke(new Action(() =>
+                    {
+                        if (previous.IsVisible && previous.Focusable && previous.IsEnabled)
+                        {
+                            previous.Focus();
+                            Keyboard.Focus(previous);
+                        }
+                    }), DispatcherPriority.Input);
+                }
             }
             catch
             {
