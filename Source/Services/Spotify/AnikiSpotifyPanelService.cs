@@ -295,11 +295,15 @@ namespace AnikiHelper.Services.Spotify
                     OpenStateChanged?.Invoke(true);
 
                     slide.Y = -root.Height;
-                    var anim = new DoubleAnimation(-root.Height, 0, TimeSpan.FromMilliseconds(260))
+                    root.CacheMode = new BitmapCache { SnapsToDevicePixels = true };
+                    var anim = new DoubleAnimation(-root.Height, 0, TimeSpan.FromMilliseconds(380))
                     {
-                        EasingFunction = new CubicEase { EasingMode = EasingMode.EaseOut }
+                        EasingFunction = new QuinticEase { EasingMode = EasingMode.EaseOut }
                     };
+                    Timeline.SetDesiredFrameRate(anim, 60);
+                    anim.Completed += (s, e) => root.CacheMode = null;
                     slide.BeginAnimation(TranslateTransform.YProperty, anim);
+                    root.BeginAnimation(UIElement.OpacityProperty, new DoubleAnimation(0.2, 1, TimeSpan.FromMilliseconds(220)));
 
                     UpdateViewForAuthState();
                 }
@@ -326,14 +330,18 @@ namespace AnikiHelper.Services.Spotify
                 CloseSide(false);
                 ReleaseExclusiveController();
 
-                var anim = new DoubleAnimation(slide.Y, -root.Height, TimeSpan.FromMilliseconds(180))
+                root.CacheMode = new BitmapCache { SnapsToDevicePixels = true };
+                var anim = new DoubleAnimation(slide.Y, -root.Height, TimeSpan.FromMilliseconds(260))
                 {
                     EasingFunction = new CubicEase { EasingMode = EasingMode.EaseIn }
                 };
+                Timeline.SetDesiredFrameRate(anim, 60);
+                root.BeginAnimation(UIElement.OpacityProperty, new DoubleAnimation(root.Opacity, 0.3, TimeSpan.FromMilliseconds(260)));
                 anim.Completed += (s, e) =>
                 {
                     if (closing)
                     {
+                        root.CacheMode = null;
                         window.Hide();
                         closing = false;
                         ActivatePlayniteMainWindow();
@@ -894,7 +902,8 @@ namespace AnikiHelper.Services.Spotify
             art = (Image)root.FindName("Art");
             backgroundArt = (Image)root.FindName("BgArt");
             backgroundHost = (Grid)root.FindName("BgHost");
-            backgroundArt.Source = GetDefaultBackground();
+            lastBackgroundSource = GetDefaultBackground();
+            backgroundArt.Source = BlurToBitmap(lastBackgroundSource as BitmapSource) ?? lastBackgroundSource;
             root.SizeChanged += (s, e) =>
             {
                 // Round only the bottom corners: push the top ones above the panel.
@@ -1382,14 +1391,88 @@ namespace AnikiHelper.Services.Spotify
             }
         }
 
+        private ImageSource lastBackgroundSource;
+
         private void CrossfadeBackground(ImageSource source)
         {
-            if (backgroundArt == null || ReferenceEquals(backgroundArt.Source, source))
+            if (backgroundArt == null || ReferenceEquals(lastBackgroundSource, source))
             {
                 return;
             }
 
-            var fadeOut = new DoubleAnimation(1, 0.35, TimeSpan.FromMilliseconds(220));
+            lastBackgroundSource = source;
+            var bitmap = source as BitmapImage;
+            if (bitmap != null && bitmap.IsDownloading)
+            {
+                // Blur once the cover has finished downloading.
+                bitmap.DownloadCompleted += (s, e) =>
+                {
+                    if (ReferenceEquals(lastBackgroundSource, source))
+                    {
+                        FadeToBackground(BlurToBitmap(bitmap) ?? source);
+                    }
+                };
+                bitmap.DownloadFailed += (s, e) => FadeToBackground(BlurToBitmap(GetDefaultBackground() as BitmapSource));
+                return;
+            }
+
+            FadeToBackground(BlurToBitmap(source as BitmapSource) ?? source);
+        }
+
+        /// <summary>
+        /// Renders the cover enlarged and blurred into a small bitmap once, so the panel never
+        /// has to blur live (which made the slide-in animation stutter).
+        /// </summary>
+        private static BitmapSource BlurToBitmap(BitmapSource source)
+        {
+            if (source == null)
+            {
+                return null;
+            }
+
+            try
+            {
+                const int width = 280;
+                const int height = 320;
+                var image = new Image
+                {
+                    Source = source,
+                    Stretch = Stretch.UniformToFill,
+                    Width = width,
+                    Height = height,
+                    RenderTransformOrigin = new Point(0.5, 0.5),
+                    RenderTransform = new ScaleTransform(1.8, 1.8),
+                    Effect = new System.Windows.Media.Effects.BlurEffect
+                    {
+                        Radius = 30,
+                        KernelType = System.Windows.Media.Effects.KernelType.Gaussian,
+                        RenderingBias = System.Windows.Media.Effects.RenderingBias.Quality
+                    }
+                };
+                var host = new Grid { Width = width, Height = height, ClipToBounds = true, Background = Brushes.Black };
+                host.Children.Add(image);
+                host.Measure(new Size(width, height));
+                host.Arrange(new Rect(0, 0, width, height));
+                host.UpdateLayout();
+                var target = new RenderTargetBitmap(width, height, 96, 96, PixelFormats.Pbgra32);
+                target.Render(host);
+                target.Freeze();
+                return target;
+            }
+            catch
+            {
+                return null;
+            }
+        }
+
+        private void FadeToBackground(ImageSource source)
+        {
+            if (backgroundArt == null || source == null)
+            {
+                return;
+            }
+
+            var fadeOut = new DoubleAnimation(backgroundArt.Opacity, 0.35, TimeSpan.FromMilliseconds(220));
             fadeOut.Completed += (s, e) =>
             {
                 backgroundArt.Source = source;
@@ -1930,7 +2013,7 @@ namespace AnikiHelper.Services.Spotify
         {
             // The same press can arrive from two input sources a few ms apart; count it once.
             var now = DateTime.UtcNow;
-            if (direction == lastMoveDirection && (now - lastMoveUtc).TotalMilliseconds < 150)
+            if (direction == lastMoveDirection && (now - lastMoveUtc).TotalMilliseconds < 230)
             {
                 return;
             }
@@ -2256,15 +2339,7 @@ namespace AnikiHelper.Services.Spotify
 
   <Grid x:Name='RootGrid'>
     <Grid x:Name='BgHost' IsHitTestVisible='False'>
-      <Image x:Name='BgArt' Stretch='UniformToFill' RenderTransformOrigin='0.5,0.5'
-             RenderOptions.BitmapScalingMode='LowQuality'>
-        <Image.RenderTransform>
-          <ScaleTransform ScaleX='1.8' ScaleY='1.8'/>
-        </Image.RenderTransform>
-        <Image.Effect>
-          <BlurEffect Radius='90' KernelType='Gaussian' RenderingBias='Performance'/>
-        </Image.Effect>
-      </Image>
+      <Image x:Name='BgArt' Stretch='Fill' RenderOptions.BitmapScalingMode='Linear'/>
       <Border Background='#73000000'/>
     </Grid>
     <Grid x:Name='MainView'>

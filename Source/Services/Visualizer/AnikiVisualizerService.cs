@@ -535,7 +535,7 @@ namespace AnikiHelper.Services.Visualizer
         private void Move(FocusNavigationDirection direction)
         {
             var now = DateTime.UtcNow;
-            if (direction == lastMoveDirection && (now - lastMoveUtc).TotalMilliseconds < 150)
+            if (direction == lastMoveDirection && (now - lastMoveUtc).TotalMilliseconds < 230)
             {
                 return;
             }
