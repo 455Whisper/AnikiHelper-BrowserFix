@@ -426,6 +426,7 @@ namespace AnikiHelper.Services.WebBrowser
         public Action OpenAudioControls { get; set; }
 
         private DateTime lastAudioControlsUtc = DateTime.MinValue;
+        private DateTime lastFooterToggleUtc = DateTime.MinValue;
 
         /// <summary>Gives the browser window focus back (after the audio box closes).</summary>
         public void Reactivate()
@@ -487,6 +488,13 @@ namespace AnikiHelper.Services.WebBrowser
 
             if (viewMode == AnikiWebBrowserViewMode.Web)
             {
+                // D-pad up on a web page: show / hide the controls bar.
+                if (state.DPadUpPressed && (DateTime.UtcNow - lastFooterToggleUtc).TotalMilliseconds > 250)
+                {
+                    lastFooterToggleUtc = DateTime.UtcNow;
+                    InvokeOnUi(ToggleFooterCore);
+                }
+
                 // D-pad left on a web page: open the playback devices / volume mixer box.
                 if (state.DPadLeftPressed && OpenAudioControls != null &&
                     (DateTime.UtcNow - lastAudioControlsUtc).TotalMilliseconds > 400)
@@ -1172,9 +1180,14 @@ namespace AnikiHelper.Services.WebBrowser
             Grid.SetRow(mainArea, 0);
             root.Children.Add(mainArea);
 
+            // Custom: the controls bar floats over the bottom of the page (the page never
+            // resizes) and is only shown when toggled with D-pad up on a web page.
             footerContainer = CreateFooter();
-            Grid.SetRow(footerContainer, 1);
-            footerContainer.Visibility = Visibility.Collapsed; // Custom: footer never added to the window
+            Grid.SetRow(footerContainer, 0);
+            footerContainer.VerticalAlignment = VerticalAlignment.Bottom;
+            footerContainer.Height = FooterHeight;
+            footerContainer.Visibility = Visibility.Collapsed;
+            root.Children.Add(footerContainer);
 
             host.Content = root;
 
@@ -1267,6 +1280,7 @@ namespace AnikiHelper.Services.WebBrowser
                 VerticalAlignment = VerticalAlignment.Center,
                 Margin = new Thickness(0, 0, 24, 0)
             };
+            title.Visibility = Visibility.Collapsed; // Custom: room for the extra controls
             Grid.SetColumn(title, 0);
             footerGrid.Children.Add(title);
 
@@ -1312,22 +1326,36 @@ namespace AnikiHelper.Services.WebBrowser
             };
         }
 
+        private bool footerToggledOn;
+
         private void RegisterFooterActivityCore()
+        {
+            // Custom: no auto-show on activity; the bar is toggled with D-pad up.
+            if (viewMode != AnikiWebBrowserViewMode.Web)
+            {
+                SetFooterVisibleCore(false);
+            }
+        }
+
+        private void ShowFooterPermanentlyCore()
+        {
+            footerAutoHideTimer?.Stop();
+            footerToggledOn = false;
+            SetFooterVisibleCore(false);
+        }
+
+        /// <summary>D-pad up on a web page: show / hide the controls bar.</summary>
+        private void ToggleFooterCore()
         {
             if (viewMode != AnikiWebBrowserViewMode.Web || windowHost == null)
             {
                 return;
             }
 
-            SetFooterVisibleCore(true);
+            footerToggledOn = !footerToggledOn;
             footerAutoHideTimer?.Stop();
-            footerAutoHideTimer?.Start();
-        }
-
-        private void ShowFooterPermanentlyCore()
-        {
-            footerAutoHideTimer?.Stop();
-            SetFooterVisibleCore(true);
+            UpdateFooterForMode();
+            SetFooterVisibleCore(footerToggledOn);
         }
 
         private void FooterAutoHideTimer_Tick(object sender, EventArgs e)
@@ -1347,15 +1375,12 @@ namespace AnikiHelper.Services.WebBrowser
                 return;
             }
 
-            // Custom: footer legend permanently hidden so the page never resizes.
-            visible = false;
+            visible = visible && footerToggledOn && viewMode == AnikiWebBrowserViewMode.Web;
 
             footerContainer.Visibility = visible
                 ? Visibility.Visible
                 : Visibility.Collapsed;
-            footerRow.Height = visible
-                ? new GridLength(FooterHeight)
-                : new GridLength(0);
+            footerRow.Height = new GridLength(0);
 
             pointerController.SetBottomInset(visible ? FooterHeight : 0);
         }
@@ -1386,12 +1411,18 @@ namespace AnikiHelper.Services.WebBrowser
             }
             else
             {
+                AddFooterLegendItem("ButtonPromptRS", "RS", "WebBrowser_LegendCursor", "Cursor");
+                AddFooterLegendItem("ButtonPromptLS", "LS", "WebBrowser_LegendScroll", "Scroll");
                 AddFooterLegendItem("ButtonPromptA", "A", "WebBrowser_LegendSelect", "Select");
                 AddFooterLegendItem("ButtonPromptLB", "LB", "WebBrowser_LegendPrevious", "Previous");
                 AddFooterLegendItem("ButtonPromptRB", "RB", "WebBrowser_LegendNext", "Next");
                 AddFooterLegendItem("ButtonPromptStart", "Start", "WebBrowser_LegendEnter", "Enter");
-                AddFooterLegendItem("ButtonPromptBack", "View", "WebBrowser_LegendCloseView", "Close web view");
                 AddFooterLegendItem("ButtonPromptX", "X", "WebBrowser_LegendKeyboard", "Keyboard");
+                AddFooterLegendItem("ButtonPromptY", "Y", "WebBrowser_LegendAddress", "Address");
+                AddFooterLegendItem("ButtonPromptDPadLeft", "\u25C0", "WebBrowser_LegendAudio", "Audio");
+                AddFooterLegendItem("ButtonPromptL3R3", "L3+R3", "WebBrowser_LegendGameMode", "Game mode");
+                AddFooterLegendItem("ButtonPromptBack", "View", "WebBrowser_LegendCloseView", "Close web view");
+                AddFooterLegendItem("ButtonPromptDPadUp", "\u25B2", "WebBrowser_LegendHideBar", "Hide bar");
                 SetFooterStatus(GetDisplayHost(SafeGetCurrentAddress()));
             }
         }
