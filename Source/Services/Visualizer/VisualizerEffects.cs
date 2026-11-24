@@ -40,9 +40,10 @@ namespace AnikiHelper.Services.Visualizer
     /// </summary>
     internal sealed class MeshGridEffect : VisualEffect
     {
-        private const int Columns = 60;
-        private const int Rows = 40;
-        private const double RowSpacing = 0.42;
+        private const int Columns = 64;
+        private const int Rows = 46;
+        private const double RowSpacing = 0.38;
+        private const double NearDistance = 2.2;
         private const double StepSeconds = 1.0 / 24;
 
         private readonly List<float[]> history = new List<float[]>();
@@ -81,18 +82,18 @@ namespace AnikiHelper.Services.Visualizer
 
             var width = size.Width;
             var height = size.Height;
-            var horizon = height * 0.40;
-            var focal = height * 0.95;
-            var cameraHeight = 1.15 - (audio.Beat * 0.08);
-            var spread = 7.5;
+            var horizon = height * 0.55;
+            var focal = height * 0.62;
+            var cameraHeight = 0.9 - (audio.Beat * 0.06);
+            var spread = 9.0;
 
             var points = new Point[Rows, Columns];
             for (var r = 0; r < Rows; r++)
             {
-                var z = 1.0 + ((r - scroll) * RowSpacing);
-                if (z < 0.6)
+                var z = NearDistance + ((r - scroll) * RowSpacing);
+                if (z < NearDistance * 0.8)
                 {
-                    z = 0.6;
+                    z = NearDistance * 0.8;
                 }
 
                 var row = r < history.Count ? history[r] : null;
@@ -101,7 +102,7 @@ namespace AnikiHelper.Services.Visualizer
                     var x = ((c / (double)(Columns - 1)) * 2 - 1) * spread;
                     var amplitude = row == null ? 0 : row[c];
                     var hills = 0.08 * Math.Sin((c * 0.45) + (time * 0.6)) * Math.Cos((r * 0.3) - (time * 0.4));
-                    var y = (amplitude * amplitude * 1.9) + hills;
+                    var y = (amplitude * amplitude * 1.25) + hills;
                     points[r, c] = new Point(
                         (width / 2) + (x * focal / z),
                         horizon + ((cameraHeight - y) * focal / z));
