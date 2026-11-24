@@ -9,7 +9,7 @@ namespace AnikiHelper.Services.Visualizer
     /// <summary>Latest analysed audio, smoothed for drawing.</summary>
     internal sealed class AudioFrame
     {
-        public const int BandCount = 64;
+        public const int BandCount = 128;
 
         public readonly float[] Bands = new float[BandCount];
         public float Bass;
@@ -275,13 +275,28 @@ namespace AnikiHelper.Services.Visualizer
                 var highHz = MinFrequency * (float)Math.Exp(ratio * (b + 1) / AudioFrame.BandCount);
                 var lowBin = Math.Max(1, (int)(lowHz / binHz));
                 var highBin = Math.Min(FftLength / 2 - 1, Math.Max(lowBin, (int)(highHz / binHz)));
-                float sum = 0;
-                for (var i = lowBin; i <= highBin; i++)
+                float magnitude;
+                if (highBin - lowBin < 2)
                 {
-                    sum += (float)Math.Sqrt((fft[i].X * fft[i].X) + (fft[i].Y * fft[i].Y));
+                    // Narrower than the FFT resolution (low end): interpolate at the band's centre
+                    // so neighbouring bands differ instead of repeating the same bin.
+                    var centre = (float)Math.Sqrt(lowHz * highHz) / binHz;
+                    var i0 = Math.Max(1, Math.Min(FftLength / 2 - 2, (int)centre));
+                    var t = Math.Max(0f, Math.Min(1f, centre - i0));
+                    var m0 = (float)Math.Sqrt((fft[i0].X * fft[i0].X) + (fft[i0].Y * fft[i0].Y));
+                    var m1 = (float)Math.Sqrt((fft[i0 + 1].X * fft[i0 + 1].X) + (fft[i0 + 1].Y * fft[i0 + 1].Y));
+                    magnitude = m0 + ((m1 - m0) * t);
                 }
+                else
+                {
+                    float sum = 0;
+                    for (var i = lowBin; i <= highBin; i++)
+                    {
+                        sum += (float)Math.Sqrt((fft[i].X * fft[i].X) + (fft[i].Y * fft[i].Y));
+                    }
 
-                var magnitude = sum / (highBin - lowBin + 1);
+                    magnitude = sum / (highBin - lowBin + 1);
+                }
                 // Compress the range so quiet and loud parts both show movement.
                 var level = (float)Math.Max(0, (20 * Math.Log10(magnitude + 1e-7) + 80) / 65);
 
@@ -297,7 +312,7 @@ namespace AnikiHelper.Services.Visualizer
                 // A band getting louder right now (a syllable, a note, a hit) gets an extra kick.
                 var rise = Math.Max(0f, level - previousLevels[b]);
                 previousLevels[b] = level;
-                if (b >= 10)
+                if (b >= 20)
                 {
                     flux += rise;
                 }
@@ -354,10 +369,10 @@ namespace AnikiHelper.Services.Visualizer
                 smoothTimeBass += (float)((timeBass - smoothTimeBass) * (1 - Math.Exp(-16.0 * deltaSeconds)));
             }
 
-            frame.Bass = Math.Max(smoothTimeBass, Average(frame.Bands, 0, 8) * 0.8f);
-            frame.Mid = Average(frame.Bands, 8, 34);
-            frame.Treble = Average(frame.Bands, 34, AudioFrame.BandCount);
-            frame.Vocal = Average(frame.Bands, 18, 44);
+            frame.Bass = Math.Max(smoothTimeBass, Average(frame.Bands, 0, 16) * 0.8f);
+            frame.Mid = Average(frame.Bands, 16, 68);
+            frame.Treble = Average(frame.Bands, 68, AudioFrame.BandCount);
+            frame.Vocal = Average(frame.Bands, 36, 88);
             float onsetTarget;
             lock (sync)
             {

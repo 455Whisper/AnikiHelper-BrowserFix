@@ -40,26 +40,33 @@ namespace AnikiHelper.Services.Visualizer
     /// </summary>
     internal sealed class MeshGridEffect : VisualEffect
     {
-        private const int Columns = 84;
-        private const int Rows = 46;
-        private const int DepthBuckets = 9;
-        private const double RowSpacing = 0.55;
-        private const double NearDistance = 3.2;
-        private const double Spread = 22.0;
-        private const double CameraHeight = 5.5;
-        private const double PitchDegrees = 30;
-        private const double SwayDegrees = 6;
-        private const double StepSeconds = 1.0 / 30;
+        private const int Columns = 161;
+        private const int Rows = 70;
+        private const double RowSpacing = 0.42;
+        private const double NearDistance = 2.2;
+        private const double Spread = 26.0;
+        private const double CameraHeight = 3.1;
+        private const double PitchDegrees = 16;
+        private const double SwayDegrees = 5;
+        private const double StepSeconds = 1.0 / 40;
+        private const double HeightScale = 3.4;
 
-        // Everything is allocated once and reused: no per-frame garbage, so no periodic
-        // garbage-collection pauses (the "lag every few seconds").
+        private static readonly Color NearColor = Color.FromRgb(0xFF, 0xE0, 0x4A);
+        private static readonly Color MidColor = Color.FromRgb(0xFF, 0x4F, 0xD8);
+        private static readonly Color FarColor = Color.FromRgb(0x3C, 0xFF, 0x8C);
+
+        // Allocated once and reused: no per-frame garbage, so no periodic GC hitches.
         private readonly float[][] history = new float[Rows][];
         private readonly Point[,] points = new Point[Rows, Columns];
+        private readonly float[] spectrum = new float[Columns];
         private int newest;
         private int filled;
         private double scroll;
-        private Pen[] bucketPens;
+        private double gradientTop = double.NaN;
+        private double gradientBottom = double.NaN;
+        private Pen glowColumnPen;
         private Pen columnPen;
+        private Pen rowPen;
 
         public MeshGridEffect()
         {
@@ -79,132 +86,158 @@ namespace AnikiHelper.Services.Visualizer
             return history[((newest - age) % Rows + Rows) % Rows];
         }
 
+        private void SampleSpectrum(AudioFrame audio)
+        {
+            // Mirrored: bass in the middle, treble toward both edges, with smooth interpolation
+            // between bands so every line gets its own value.
+            var half = (Columns - 1) / 2.0;
+            var maxBand = AudioFrame.BandCount - 2;
+            for (var c = 0; c < Columns; c++)
+            {
+                var fromCentre = Math.Abs(c - half) / half;
+                var position = Math.Pow(fromCentre, 0.85) * maxBand;
+                var i = (int)position;
+                var t = (float)(position - i);
+                spectrum[c] = (audio.Bands[i] * (1 - t)) + (audio.Bands[i + 1] * t);
+            }
+        }
+
         public override void Render(DrawingContext dc, Size size, AudioFrame audio, double time, double delta)
         {
-            EnsurePens();
+            SampleSpectrum(audio);
 
             scroll += delta / StepSeconds;
             while (scroll >= 1 || filled == 0)
             {
                 scroll = Math.Max(0, scroll - 1);
                 newest = (newest + 1) % Rows;
-                var snapshot = history[newest];
-                for (var c = 0; c < Columns; c++)
-                {
-                    // Mirror the spectrum: bass in the centre, treble toward both edges.
-                    var fromCentre = Math.Abs((c - ((Columns - 1) / 2.0)) / ((Columns - 1) / 2.0));
-                    var band = (int)Math.Min(AudioFrame.BandCount - 1, fromCentre * (AudioFrame.BandCount - 4));
-                    snapshot[c] = audio.Bands[band];
-                }
-
+                Array.Copy(spectrum, history[newest], Columns);
                 filled = Math.Min(Rows, filled + 1);
             }
 
-            // Keep the newest row live between steps so peaks react immediately.
+            // Newest row stays live between steps so peaks react immediately.
             var live = history[newest];
             for (var c = 0; c < Columns; c++)
             {
-                var fromCentre = Math.Abs((c - ((Columns - 1) / 2.0)) / ((Columns - 1) / 2.0));
-                var band = (int)Math.Min(AudioFrame.BandCount - 1, fromCentre * (AudioFrame.BandCount - 4));
-                live[c] = Math.Max(live[c], audio.Bands[band]);
+                live[c] = Math.Max(live[c], spectrum[c]);
             }
 
             var width = size.Width;
             var height = size.Height;
-            var focal = height * 0.95;
+            var focal = height * 0.9;
             var centreX = width / 2;
-            var centreY = height * 0.5;
+            var centreY = height * 0.42;
 
-            // Camera looks down at 30 degrees and slowly sways left/right.
             var pitch = PitchDegrees * Math.PI / 180;
             var yaw = SwayDegrees * Math.PI / 180 * Math.Sin(time * 0.12);
             var cosPitch = Math.Cos(pitch);
             var sinPitch = Math.Sin(pitch);
             var cosYaw = Math.Cos(yaw);
             var sinYaw = Math.Sin(yaw);
-            var cameraHeight = CameraHeight + (audio.Beat * 0.15) + (audio.Onset * 0.12);
+            var cameraHeight = CameraHeight + (audio.Beat * 0.12) + (audio.Onset * 0.08);
 
             for (var r = 0; r < Rows; r++)
             {
                 var z = NearDistance + ((r - scroll) * RowSpacing);
                 var row = r < filled ? RowAt(r) : null;
+
+                // Far rows fade down slightly so the horizon reads as a soft ridge.
+                var distanceFade = 1.0 - (r / (double)Rows * 0.25);
                 for (var c = 0; c < Columns; c++)
                 {
                     var x = ((c / (double)(Columns - 1)) * 2 - 1) * Spread;
                     var amplitude = row == null ? 0 : row[c];
-                    var y = Math.Pow(amplitude, 1.25) * 2.7;
+                    var y = Math.Pow(amplitude, 1.3) * HeightScale * distanceFade;
 
                     var dy = y - cameraHeight;
                     var x1 = (x * cosYaw) - (z * sinYaw);
                     var z1 = (x * sinYaw) + (z * cosYaw);
                     var y2 = (dy * cosPitch) + (z1 * sinPitch);
-                    var z2 = Math.Max(0.5, (-dy * sinPitch) + (z1 * cosPitch));
+                    var z2 = Math.Max(0.3, (-dy * sinPitch) + (z1 * cosPitch));
                     points[r, c] = new Point(centreX + (x1 * focal / z2), centreY - (y2 * focal / z2));
                 }
             }
 
-            // Rows grouped by depth: a handful of shapes per frame instead of one per row.
-            var rowsPerBucket = (int)Math.Ceiling(Rows / (double)DepthBuckets);
-            for (var bucket = DepthBuckets - 1; bucket >= 0; bucket--)
-            {
-                var geometry = new StreamGeometry();
-                using (var context = geometry.Open())
-                {
-                    var first = bucket * rowsPerBucket;
-                    var last = Math.Min(Rows, first + rowsPerBucket);
-                    for (var r = first; r < last; r++)
-                    {
-                        context.BeginFigure(points[r, 0], false, false);
-                        for (var c = 1; c < Columns; c++)
-                        {
-                            context.LineTo(points[r, c], true, false);
-                        }
-                    }
-                }
+            EnsurePens(height);
 
-                geometry.Freeze();
-                dc.DrawGeometry(null, bucketPens[bucket], geometry);
-            }
-
+            // Lines running into the distance: the main look. Drawn twice for a glow.
             var columns = new StreamGeometry();
             using (var context = columns.Open())
             {
-                for (var c = 0; c < Columns; c += 2)
+                for (var c = 0; c < Columns; c++)
                 {
                     context.BeginFigure(points[Rows - 1, c], false, false);
                     for (var r = Rows - 2; r >= 0; r--)
                     {
-                        context.LineTo(points[r, c], true, false);
+                        context.LineTo(points[r, c], true, true);
                     }
                 }
             }
 
             columns.Freeze();
+
+            // Faint cross lines every few rows give the surface its mesh texture.
+            var rows = new StreamGeometry();
+            using (var context = rows.Open())
+            {
+                for (var r = 0; r < Rows; r += 3)
+                {
+                    context.BeginFigure(points[r, 0], false, false);
+                    for (var c = 1; c < Columns; c++)
+                    {
+                        context.LineTo(points[r, c], true, true);
+                    }
+                }
+            }
+
+            rows.Freeze();
+
+            dc.DrawGeometry(null, glowColumnPen, columns);
+            dc.DrawGeometry(null, rowPen, rows);
             dc.DrawGeometry(null, columnPen, columns);
         }
 
-        private void EnsurePens()
+        private void EnsurePens(double height)
         {
-            if (bucketPens != null)
+            // Colour by screen height: near (bottom) yellow, through pink, to green at the horizon.
+            var top = height * 0.12;
+            var bottom = height;
+            if (columnPen != null && Math.Abs(top - gradientTop) < 1 && Math.Abs(bottom - gradientBottom) < 1)
             {
                 return;
             }
 
-            bucketPens = new Pen[DepthBuckets];
-            for (var b = 0; b < DepthBuckets; b++)
-            {
-                var depth = b / (double)(DepthBuckets - 1);
-                var color = Lerp(Cyan, Violet, depth);
-                color.A = (byte)(235 * (1 - (depth * 0.8)));
-                var pen = new Pen(Frozen(color), 1.7 - (depth * 0.9));
-                pen.Freeze();
-                bucketPens[b] = pen;
-            }
-
-            var columnColor = Lerp(Cyan, Violet, 0.5);
-            columnColor.A = 80;
-            columnPen = new Pen(Frozen(columnColor), 0.9);
+            gradientTop = top;
+            gradientBottom = bottom;
+            columnPen = new Pen(Gradient(top, bottom, 235), 1.25);
             columnPen.Freeze();
+            glowColumnPen = new Pen(Gradient(top, bottom, 55), 4.5);
+            glowColumnPen.Freeze();
+            rowPen = new Pen(Gradient(top, bottom, 60), 0.8);
+            rowPen.Freeze();
+        }
+
+        private static Brush Gradient(double top, double bottom, byte alpha)
+        {
+            var brush = new LinearGradientBrush
+            {
+                MappingMode = BrushMappingMode.Absolute,
+                StartPoint = new Point(0, bottom),
+                EndPoint = new Point(0, top)
+            };
+            brush.GradientStops.Add(new GradientStop(WithAlpha(NearColor, alpha), 0.0));
+            brush.GradientStops.Add(new GradientStop(WithAlpha(NearColor, alpha), 0.35));
+            brush.GradientStops.Add(new GradientStop(WithAlpha(MidColor, alpha), 0.62));
+            brush.GradientStops.Add(new GradientStop(WithAlpha(FarColor, alpha), 0.85));
+            brush.GradientStops.Add(new GradientStop(WithAlpha(FarColor, (byte)(alpha * 0.6)), 1.0));
+            brush.Freeze();
+            return brush;
+        }
+
+        private static Color WithAlpha(Color color, byte alpha)
+        {
+            color.A = alpha;
+            return color;
         }
     }
 
