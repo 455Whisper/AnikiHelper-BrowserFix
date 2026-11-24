@@ -38,6 +38,7 @@ namespace AnikiHelper.Services.WebBrowser
         private readonly Func<CoreWebView2Environment> environment;
         private readonly Func<string> folder;
         private readonly Func<string, string> directoryForId;
+        private readonly Func<string, Task<bool>> removeExtension;
 
         private readonly Border root;
         private readonly StackPanel list;
@@ -56,8 +57,10 @@ namespace AnikiHelper.Services.WebBrowser
             Func<CoreWebView2> mainCore,
             Func<CoreWebView2Environment> environment,
             Func<string> folder,
-            Func<string, string> directoryForId)
+            Func<string, string> directoryForId,
+            Func<string, Task<bool>> removeExtension)
         {
+            this.removeExtension = removeExtension;
             this.logger = logger;
             this.mainCore = mainCore;
             this.environment = environment;
@@ -361,6 +364,7 @@ namespace AnikiHelper.Services.WebBrowser
             var row = new Grid();
             row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
             row.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+            row.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
 
             var main = new Grid();
             main.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(40) });
@@ -405,6 +409,45 @@ namespace AnikiHelper.Services.WebBrowser
                 row.Children.Add(gear);
                 buttons.Add(gear);
             }
+
+            // Remove: press once to arm ("Remove?"), again within 3 seconds to remove.
+            var trash = MakeIconButton("\uE74D", "Remove");
+            var armedUntil = DateTime.MinValue;
+            var trashGlyph = (TextBlock)trash.Content;
+            trash.Click += async (s, e) =>
+            {
+                if (DateTime.UtcNow > armedUntil)
+                {
+                    armedUntil = DateTime.UtcNow.AddSeconds(3);
+                    trashGlyph.Text = "Remove?";
+                    trashGlyph.FontFamily = new FontFamily("Segoe UI");
+                    trashGlyph.FontSize = 14;
+                    trashGlyph.Foreground = Frozen(Color.FromRgb(0xF2, 0x8B, 0x82));
+                    trash.Width = 86;
+                    var reset = new System.Windows.Threading.DispatcherTimer { Interval = TimeSpan.FromSeconds(3) };
+                    reset.Tick += (s2, e2) =>
+                    {
+                        reset.Stop();
+                        trashGlyph.Text = "\uE74D";
+                        trashGlyph.FontFamily = new FontFamily(IconFont);
+                        trashGlyph.FontSize = 20;
+                        trashGlyph.Foreground = TextBrush;
+                        trash.Width = 46;
+                    };
+                    reset.Start();
+                    return;
+                }
+
+                armedUntil = DateTime.MinValue;
+                var removed = removeExtension != null && await removeExtension(extension.Id);
+                if (removed)
+                {
+                    await LoadAsync();
+                }
+            };
+            Grid.SetColumn(trash, 2);
+            row.Children.Add(trash);
+            buttons.Add(trash);
 
             list.Children.Add(row);
             rows.Add(buttons);

@@ -522,6 +522,13 @@ namespace AnikiHelper.Services.WebBrowser
                     return;
                 }
 
+                // D-pad down on a Chrome Web Store extension page: add it to Aniki.
+                if (state.DPadDownPressed && storeExtensionId != null)
+                {
+                    InvokeOnUi(() => { var t = InstallFromStoreAsync(); });
+                    return;
+                }
+
                 // D-pad right on a web page: open the Extensions drop-down (top right).
                 if (state.DPadRightPressed && (DateTime.UtcNow - lastOverlayMoveUtc).TotalMilliseconds > 300)
                 {
@@ -1244,9 +1251,35 @@ namespace AnikiHelper.Services.WebBrowser
                 () => webView?.CoreWebView2,
                 () => environment,
                 GetCustomExtensionsFolder,
-                ExtensionDirectoryFor);
+                ExtensionDirectoryFor,
+                RemoveExtensionAsync);
             Grid.SetRow(extensionsOverlay.Element, 0);
             root.Children.Add(extensionsOverlay.Element);
+
+            // "Add to Aniki" pill shown on Chrome Web Store extension pages.
+            storeBarText = new TextBlock
+            {
+                FontSize = 19,
+                FontWeight = FontWeights.SemiBold,
+                Foreground = Brushes.White,
+                VerticalAlignment = VerticalAlignment.Center
+            };
+            storeBar = new Border
+            {
+                CornerRadius = new CornerRadius(22),
+                Background = new SolidColorBrush(Color.FromArgb(235, 0x1A, 0x73, 0xE8)),
+                Padding = new Thickness(22, 10, 22, 10),
+                HorizontalAlignment = HorizontalAlignment.Center,
+                VerticalAlignment = VerticalAlignment.Top,
+                Margin = new Thickness(0, 16, 0, 0),
+                Cursor = Cursors.Hand,
+                Visibility = Visibility.Collapsed,
+                Effect = new System.Windows.Media.Effects.DropShadowEffect { BlurRadius = 18, ShadowDepth = 3, Opacity = 0.5 },
+                Child = storeBarText
+            };
+            storeBar.MouseLeftButtonUp += (s, e) => { var t = InstallFromStoreAsync(); };
+            Grid.SetRow(storeBar, 0);
+            root.Children.Add(storeBar);
 
             host.Content = root;
 
@@ -1412,6 +1445,7 @@ namespace AnikiHelper.Services.WebBrowser
         private void ShowFooterPermanentlyCore()
         {
             CloseExtensionsOverlayCore();
+            UpdateStoreBarCore();
             footerAutoHideTimer?.Stop();
             footerToggledOn = false;
             SetFooterVisibleCore(false);
@@ -2292,6 +2326,7 @@ namespace AnikiHelper.Services.WebBrowser
 
         private void Core_NavigationCompleted(object sender, CoreWebView2NavigationCompletedEventArgs e)
         {
+            UpdateStoreBarCore();
             BoostBrowserProcessPriority();
             if (viewMode != AnikiWebBrowserViewMode.Web)
             {
@@ -2317,6 +2352,7 @@ namespace AnikiHelper.Services.WebBrowser
 
         private void Core_SourceChanged(object sender, CoreWebView2SourceChangedEventArgs e)
         {
+            UpdateStoreBarCore();
             if (viewMode != AnikiWebBrowserViewMode.Web)
             {
                 return;
@@ -3228,6 +3264,120 @@ namespace AnikiHelper.Services.WebBrowser
             // Fallback: match by manifest name is not reliable; scan folders for a "key"-less match by id is impossible,
             // so just return null (the overlay then shows the WebView2 name and a letter icon).
             return null;
+        }
+
+        // ---- Chrome Web Store: "Add to Aniki" ----
+        private Border storeBar;
+        private TextBlock storeBarText;
+        private string storeExtensionId;
+        private bool storeInstalling;
+
+        private void UpdateStoreBarCore()
+        {
+            if (storeBar == null)
+            {
+                return;
+            }
+
+            var id = viewMode == AnikiWebBrowserViewMode.Web
+                ? ChromeWebStoreInstaller.GetExtensionId(SafeGetCurrentAddress())
+                : null;
+            if (id != storeExtensionId && !storeInstalling)
+            {
+                storeExtensionId = id;
+                var installed = id != null && Directory.Exists(ChromeWebStoreInstaller.FolderFor(GetCustomExtensionsFolder(), id));
+                storeBarText.Text = installed
+                    ? "\u2713  In Aniki  \u2022  D-pad down to update"
+                    : "\uFF0B  Add to Aniki  \u2022  press D-pad down";
+            }
+
+            storeBar.Visibility = storeExtensionId != null || storeInstalling ? Visibility.Visible : Visibility.Collapsed;
+        }
+
+        private async Task InstallFromStoreAsync()
+        {
+            var id = storeExtensionId;
+            var core = webView?.CoreWebView2;
+            if (id == null || core == null || storeInstalling)
+            {
+                return;
+            }
+
+            storeInstalling = true;
+            storeBarText.Text = "Adding to Aniki\u2026";
+            try
+            {
+                var folder = GetCustomExtensionsFolder();
+                Directory.CreateDirectory(folder);
+                var target = ChromeWebStoreInstaller.FolderFor(folder, id);
+
+                // Updating: unload the old copy first so its files can be replaced.
+                var loaded = await core.Profile.GetBrowserExtensionsAsync();
+                foreach (var existing in loaded)
+                {
+                    string dir;
+                    if (extensionDirectories.TryGetValue(existing.Id, out dir) && string.Equals(dir, target, StringComparison.OrdinalIgnoreCase))
+                    {
+                        try { await existing.RemoveAsync(); } catch { }
+                        extensionDirectories.Remove(existing.Id);
+                    }
+                }
+
+                var unpacked = await ChromeWebStoreInstaller.DownloadAndUnpackAsync(id, folder, CoreWebView2Environment.GetAvailableBrowserVersionString());
+                var extension = await core.Profile.AddBrowserExtensionAsync(unpacked);
+                extensionDirectories[extension.Id] = unpacked;
+                logger.Info("[AnikiHelper][WebBrowser][Extensions] Installed from the Chrome Web Store: " + extension.Name + " (" + unpacked + ")");
+                storeBarText.Text = "\u2713  Added \u201C" + extension.Name + "\u201D  \u2022  D-pad right for Extensions";
+            }
+            catch (Exception ex)
+            {
+                logger.Warn(ex, "[AnikiHelper][WebBrowser][Extensions] Web Store install failed for " + id);
+                storeBarText.Text = "Couldn't add it: " + ex.Message;
+            }
+            finally
+            {
+                storeInstalling = false;
+            }
+        }
+
+        private async Task<bool> RemoveExtensionAsync(string id)
+        {
+            var core = webView?.CoreWebView2;
+            if (core == null || id == null)
+            {
+                return false;
+            }
+
+            try
+            {
+                var loaded = await core.Profile.GetBrowserExtensionsAsync();
+                var extension = loaded.FirstOrDefault(e => e.Id == id);
+                if (extension != null)
+                {
+                    await extension.RemoveAsync();
+                }
+
+                string dir;
+                if (extensionDirectories.TryGetValue(id, out dir))
+                {
+                    extensionDirectories.Remove(id);
+                    var folder = Path.GetFullPath(GetCustomExtensionsFolder()) + Path.DirectorySeparatorChar;
+                    if (Path.GetFullPath(dir).StartsWith(folder, StringComparison.OrdinalIgnoreCase) && Directory.Exists(dir))
+                    {
+                        Directory.Delete(dir, true);
+                    }
+                }
+
+                logger.Info("[AnikiHelper][WebBrowser][Extensions] Removed " + (extension?.Name ?? id));
+                storeExtensionId = null;
+                UpdateStoreBarCore();
+                return true;
+            }
+            catch (Exception ex)
+            {
+                logger.Warn(ex, "[AnikiHelper][WebBrowser][Extensions] Could not remove " + id);
+                return false;
+            }
         }
 
         private void OpenExtensionsOverlayCore()
