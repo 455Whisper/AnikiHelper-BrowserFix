@@ -21202,12 +21202,23 @@ namespace AnikiHelper
 
         #region Lifecycle
 
+        private DimWatchdog dimWatchdog;
+
         public override void OnApplicationStarted(OnApplicationStartedEventArgs args)
         {
             var swTotal = Stopwatch.StartNew();
             var sw = Stopwatch.StartNew();
 
             DebugLog("[AnikiHelper][OnApplicationStarted] START");
+
+            try
+            {
+                dimWatchdog = new DimWatchdog(logger);
+                dimWatchdog.Start();
+            }
+            catch
+            {
+            }
 
             try
             {
