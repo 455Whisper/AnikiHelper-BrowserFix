@@ -330,6 +330,10 @@ namespace AnikiHelper.Services.Spotify
                     closing = false;
                     IsOpen = true;
                     RememberPlayniteFocus();
+
+                    // The A/Enter press that opened the panel can also reach it (as a pad state
+                    // and/or a key). Ignore activation briefly so it can't pause or start a song.
+                    lastActivateUtc = DateTime.UtcNow.AddMilliseconds(450);
                     window.BeginAnimation(Window.TopProperty, null);
                     window.Top = targetTop - window.Height;
                     window.Show();
