@@ -102,6 +102,91 @@ namespace AnikiHelper.Services.Spotify
         private readonly string volumesFile;
         private readonly Dictionary<string, Func<float>> readers = new Dictionary<string, Func<float>>();
         private Dictionary<string, float> rememberedVolumes;
+        private MMDeviceEnumerator notifyEnumerator;
+        private DeviceNotifications deviceNotifications;
+        private readonly List<KeyValuePair<AudioEndpointVolume, AudioEndpointVolumeNotificationDelegate>> volumeSubscriptions =
+            new List<KeyValuePair<AudioEndpointVolume, AudioEndpointVolumeNotificationDelegate>>();
+
+        /// <summary>A device was added, removed, enabled/disabled, or the default output changed.</summary>
+        public event Action DevicesChanged;
+
+        /// <summary>A device's volume changed anywhere in Windows (key, 0-1 volume).</summary>
+        public event Action<string, float> DeviceVolumeChanged;
+
+        /// <summary>Starts listening for device changes (call once).</summary>
+        public void StartWatching()
+        {
+            if (deviceNotifications != null)
+            {
+                return;
+            }
+
+            try
+            {
+                notifyEnumerator = new MMDeviceEnumerator();
+                deviceNotifications = new DeviceNotifications(() => DevicesChanged?.Invoke());
+                notifyEnumerator.RegisterEndpointNotificationCallback(deviceNotifications);
+            }
+            catch (Exception ex)
+            {
+                logger?.Warn(ex, "[AnikiHelper][Audio] Could not watch for audio device changes.");
+                deviceNotifications = null;
+            }
+        }
+
+        public void StopWatching()
+        {
+            ClearVolumeSubscriptions();
+            try
+            {
+                if (notifyEnumerator != null && deviceNotifications != null)
+                {
+                    notifyEnumerator.UnregisterEndpointNotificationCallback(deviceNotifications);
+                }
+            }
+            catch
+            {
+            }
+
+            deviceNotifications = null;
+            notifyEnumerator = null;
+        }
+
+        private void ClearVolumeSubscriptions()
+        {
+            foreach (var pair in volumeSubscriptions)
+            {
+                try { pair.Key.OnVolumeNotification -= pair.Value; } catch { }
+            }
+
+            volumeSubscriptions.Clear();
+        }
+
+        private sealed class DeviceNotifications : NAudio.CoreAudioApi.Interfaces.IMMNotificationClient
+        {
+            private readonly Action changed;
+
+            public DeviceNotifications(Action changed)
+            {
+                this.changed = changed;
+            }
+
+            public void OnDeviceStateChanged(string deviceId, DeviceState newState) { changed(); }
+
+            public void OnDeviceAdded(string pwstrDeviceId) { changed(); }
+
+            public void OnDeviceRemoved(string deviceId) { changed(); }
+
+            public void OnDefaultDeviceChanged(DataFlow flow, Role role, string defaultDeviceId)
+            {
+                if (flow == DataFlow.Render && role == Role.Multimedia)
+                {
+                    changed();
+                }
+            }
+
+            public void OnPropertyValueChanged(string pwstrDeviceId, PropertyKey key) { }
+        }
 
         public AudioMixerSource(ILogger logger, string dataDirectory)
         {
@@ -207,6 +292,7 @@ namespace AnikiHelper.Services.Spotify
         {
             var result = new List<AudioEntry>();
             readers.Clear();
+            ClearVolumeSubscriptions();
             try
             {
                 var enumerator = new MMDeviceEnumerator();
@@ -228,6 +314,16 @@ namespace AnikiHelper.Services.Spotify
                     if (inUse)
                     {
                         readers[key] = () => endpoint.MasterVolumeLevelScalar;
+                        var entryKey = key;
+                        AudioEndpointVolumeNotificationDelegate handler = data => DeviceVolumeChanged?.Invoke(entryKey, data.MasterVolume);
+                        try
+                        {
+                            endpoint.OnVolumeNotification += handler;
+                            volumeSubscriptions.Add(new KeyValuePair<AudioEndpointVolume, AudioEndpointVolumeNotificationDelegate>(endpoint, handler));
+                        }
+                        catch
+                        {
+                        }
                     }
 
                     result.Add(new AudioEntry(
@@ -263,6 +359,7 @@ namespace AnikiHelper.Services.Spotify
         {
             var result = new List<AudioEntry>();
             readers.Clear();
+            ClearVolumeSubscriptions();
             try
             {
                 var enumerator = new MMDeviceEnumerator();

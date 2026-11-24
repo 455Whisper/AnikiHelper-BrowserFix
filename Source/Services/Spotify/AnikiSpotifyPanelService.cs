@@ -501,7 +501,7 @@ namespace AnikiHelper.Services.Spotify
             prevTabButton.Click += (s, e) => SwitchTab();
             nextTabButton.Click += (s, e) => SwitchTab();
 
-            sideRefreshTimer = new DispatcherTimer(DispatcherPriority.Background) { Interval = TimeSpan.FromMilliseconds(1500) };
+            sideRefreshTimer = new DispatcherTimer(DispatcherPriority.Background) { Interval = TimeSpan.FromMilliseconds(500) };
             sideRefreshTimer.Tick += (s, e) =>
             {
                 if (IsSideOpen && mixer != null)
@@ -533,7 +533,15 @@ namespace AnikiHelper.Services.Spotify
             if (mixer == null)
             {
                 mixer = new AudioMixerSource(logger, api.DataDirectory);
+                mixer.DeviceVolumeChanged += (key, volume) => RunOnUi(() =>
+                {
+                    var entry = audioEntries.FirstOrDefault(e => e.Key == key);
+                    entry?.UpdateFromSystem(volume);
+                });
+                mixer.DevicesChanged += () => RunOnUi(ScheduleDeviceListReload);
             }
+
+            mixer.StartWatching();
 
             sidePanel.Visibility = Visibility.Visible;
             sideToggleButton.Content = "";
@@ -554,6 +562,7 @@ namespace AnikiHelper.Services.Spotify
             }
 
             sideRefreshTimer.Stop();
+            mixer?.StopWatching();
             sidePanel.BeginAnimation(UIElement.OpacityProperty, null);
             sidePanel.Visibility = Visibility.Collapsed;
             sideToggleButton.Content = "";
@@ -561,6 +570,34 @@ namespace AnikiHelper.Services.Spotify
             {
                 FocusLater(sideToggleButton);
             }
+        }
+
+        private DispatcherTimer deviceReloadTimer;
+
+        // Devices often fire several notifications at once (plug-in, then default change);
+        // wait a moment and rebuild the list once.
+        private void ScheduleDeviceListReload()
+        {
+            if (!IsSideOpen || showingMixer)
+            {
+                return;
+            }
+
+            if (deviceReloadTimer == null)
+            {
+                deviceReloadTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(400) };
+                deviceReloadTimer.Tick += (s, e) =>
+                {
+                    deviceReloadTimer.Stop();
+                    if (IsSideOpen && !showingMixer)
+                    {
+                        LoadSideList();
+                    }
+                };
+            }
+
+            deviceReloadTimer.Stop();
+            deviceReloadTimer.Start();
         }
 
         private void SelectOutputDevice(AudioEntry entry)
