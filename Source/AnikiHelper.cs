@@ -8597,6 +8597,13 @@ namespace AnikiHelper
                     Settings?.IsAnikiWindowOpen != true);
             spotifyPanelService.OpenStateChanged += isOpen =>
             {
+                // Opened over the web browser (volume box): the browser already holds the
+                // "window open" state, so don't toggle it here.
+                if (webBrowserService?.IsOpen == true)
+                {
+                    return;
+                }
+
                 SetAnikiWindowOpenState(isOpen, "Spotify");
                 if (!isOpen && visualizerService?.IsOpen == true)
                 {
@@ -8612,6 +8619,11 @@ namespace AnikiHelper
             };
 
             visualizerService = new AnikiVisualizerService(logger, spotifyPanelService);
+            if (webBrowserService != null)
+            {
+                webBrowserService.OpenAudioControls = () =>
+                    spotifyPanelService?.OpenAudioOnly(() => webBrowserService?.Reactivate());
+            }
             visualizerService.OpenStateChanged += isOpen =>
             {
                 SetAnikiWindowOpenState(isOpen, "Visualizer");

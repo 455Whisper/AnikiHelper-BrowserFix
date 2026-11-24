@@ -422,6 +422,23 @@ namespace AnikiHelper.Services.WebBrowser
                     CoreWebView2BrowsingDataKinds.AllProfile));
         }
 
+        /// <summary>Set by the plugin: opens the playback devices / mixer box over the browser.</summary>
+        public Action OpenAudioControls { get; set; }
+
+        private DateTime lastAudioControlsUtc = DateTime.MinValue;
+
+        /// <summary>Gives the browser window focus back (after the audio box closes).</summary>
+        public void Reactivate()
+        {
+            InvokeOnUi(delegate
+            {
+                if (IsOpen && windowHost != null && windowHost.IsVisible && !closing)
+                {
+                    BringBrowserToForeground();
+                }
+            });
+        }
+
         public void ProcessControllerInput(WebBrowserGamepadInputState state)
         {
             if (!IsControllerInputActive)
@@ -470,6 +487,20 @@ namespace AnikiHelper.Services.WebBrowser
 
             if (viewMode == AnikiWebBrowserViewMode.Web)
             {
+                // D-pad left on a web page: open the playback devices / volume mixer box.
+                if (state.DPadLeftPressed && OpenAudioControls != null &&
+                    (DateTime.UtcNow - lastAudioControlsUtc).TotalMilliseconds > 400)
+                {
+                    lastAudioControlsUtc = DateTime.UtcNow;
+                    var open = OpenAudioControls;
+                    InvokeOnUi(delegate
+                    {
+                        pointerController.SuspendInput();
+                        open();
+                    });
+                    return;
+                }
+
                 if (HasWebUserActivity(state))
                 {
                     NotifyFooterActivity();

@@ -308,6 +308,28 @@ namespace AnikiHelper.Services.Spotify
             });
         }
 
+        private bool audioOnly;
+        private Action audioOnlyClosed;
+
+        /// <summary>
+        /// Opens only the Playback devices / Mixer box (no Spotify panel), e.g. from the web
+        /// browser. <paramref name="onClosed"/> runs after it closes, to give focus back.
+        /// </summary>
+        public void OpenAudioOnly(Action onClosed)
+        {
+            RunOnUi(() =>
+            {
+                if (IsOpen || signingIn)
+                {
+                    return;
+                }
+
+                audioOnly = true;
+                audioOnlyClosed = onClosed;
+                Open(null);
+            });
+        }
+
         public void Open(FrameworkElement anchor)
         {
             RunOnUi(() =>
@@ -315,6 +337,11 @@ namespace AnikiHelper.Services.Spotify
                 if (IsOpen || signingIn)
                 {
                     return;
+                }
+
+                if (audioOnlyClosed == null)
+                {
+                    audioOnly = false;
                 }
 
                 try
@@ -353,12 +380,23 @@ namespace AnikiHelper.Services.Spotify
                     };
                     window.BeginAnimation(Window.TopProperty, anim);
 
-                    UpdateViewForAuthState();
+                    if (audioOnly)
+                    {
+                        root.Visibility = Visibility.Hidden;
+                        OpenSide();
+                    }
+                    else
+                    {
+                        root.Visibility = Visibility.Visible;
+                        UpdateViewForAuthState();
+                    }
                 }
                 catch (Exception ex)
                 {
                     logger?.Error(ex, "[AnikiHelper][Spotify] Failed to open the Spotify panel.");
                     IsOpen = false;
+                    audioOnly = false;
+                    audioOnlyClosed = null;
                 }
             });
         }
@@ -377,6 +415,10 @@ namespace AnikiHelper.Services.Spotify
                 StopTimers();
                 CloseSide(false);
                 ReleaseExclusiveController();
+                var returnTo = audioOnly ? audioOnlyClosed : null;
+                var wasAudioOnly = audioOnly;
+                audioOnly = false;
+                audioOnlyClosed = null;
 
                 var anim = new DoubleAnimation(window.Top, targetTop - window.Height, TimeSpan.FromMilliseconds(260))
                 {
@@ -389,13 +431,27 @@ namespace AnikiHelper.Services.Spotify
                         window.Hide();
                         window.BeginAnimation(Window.TopProperty, null);
                         closing = false;
-                        ActivatePlayniteMainWindow();
-                        LogWindowStateSoon();
+                        if (wasAudioOnly)
+                        {
+                            try { returnTo?.Invoke(); } catch { }
+                        }
+                        else
+                        {
+                            ActivatePlayniteMainWindow();
+                            LogWindowStateSoon();
+                        }
                     }
                 };
                 window.BeginAnimation(Window.TopProperty, anim);
                 OpenStateChanged?.Invoke(false);
-                ActivatePlayniteMainWindow();
+                if (wasAudioOnly)
+                {
+                    try { returnTo?.Invoke(); } catch { }
+                }
+                else
+                {
+                    ActivatePlayniteMainWindow();
+                }
             });
         }
 
@@ -548,6 +604,15 @@ namespace AnikiHelper.Services.Spotify
             var sideTop = Math.Min(170, Math.Max(60, height - 620));
             sidePanel.Margin = new Thickness(width + SideGap, sideTop, 0, 0);
             sidePanel.Height = Math.Min(560, height - sideTop - 20);
+
+            if (audioOnly)
+            {
+                // Just the volume box, dropping down at the top-left of the screen.
+                window.Width = SideWidth * scale;
+                window.Height = (sidePanel.Height + 40) * scale;
+                window.Left = screenLeft + (40 * scale);
+                sidePanel.Margin = new Thickness(0, 20, 0, 0);
+            }
         }
 
         private Grid windowHost;
@@ -1184,7 +1249,11 @@ namespace AnikiHelper.Services.Spotify
                     }
 
                     lastBackUtc = DateTime.UtcNow;
-                    if (IsPlaylistViewOpen && !IsSideFocused())
+                    if (audioOnly)
+                    {
+                        Close();
+                    }
+                    else if (IsPlaylistViewOpen && !IsSideFocused())
                     {
                         ClosePlaylistView();
                     }
@@ -2374,6 +2443,17 @@ namespace AnikiHelper.Services.Spotify
                     return;
                 }
 
+                if ((state.BackPressed || state.ClosePressed) && audioOnly)
+                {
+                    if ((DateTime.UtcNow - lastBackUtc).TotalMilliseconds > 250)
+                    {
+                        lastBackUtc = DateTime.UtcNow;
+                        Close();
+                    }
+
+                    return;
+                }
+
                 if (state.BackPressed && IsSideOpen)
                 {
                     if ((DateTime.UtcNow - lastBackUtc).TotalMilliseconds > 250)
@@ -2407,7 +2487,7 @@ namespace AnikiHelper.Services.Spotify
                     ActivateFocused();
                 }
 
-                if (mainView.Visibility != Visibility.Visible)
+                if (audioOnly || mainView.Visibility != Visibility.Visible)
                 {
                     return;
                 }
