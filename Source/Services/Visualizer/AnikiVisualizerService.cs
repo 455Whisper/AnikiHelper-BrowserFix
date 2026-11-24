@@ -763,7 +763,7 @@ namespace AnikiHelper.Services.Visualizer
     </Grid>
 
     <StackPanel VerticalAlignment='Center' HorizontalAlignment='Center' Margin='0,40,0,0'>
-      <Border x:Name='CoverFrame' Width='437' Height='437' BorderBrush='#FFFFFF' BorderThickness='7'
+      <Border x:Name='CoverFrame' Width='481' Height='481' BorderThickness='0'
               Background='#14FFFFFF' RenderTransformOrigin='0.5,0.5'>
         <Border.RenderTransform>
           <ScaleTransform x:Name='CoverScale' ScaleX='1' ScaleY='1'/>
