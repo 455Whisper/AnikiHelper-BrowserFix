@@ -25,8 +25,9 @@ namespace AnikiHelper.Services.Visualizer
     /// </summary>
     internal sealed class AudioSpectrumAnalyzer : IDisposable
     {
-        private const int FftLength = 2048;
-        private const int FftPower = 11;
+        // 1024 samples (~21 ms) per analysis, run every 256 new samples (~5 ms): low delay.
+        private const int FftLength = 1024;
+        private const int FftPower = 10;
         private const float MinFrequency = 30f;
         private const float MaxFrequency = 16000f;
 
@@ -43,7 +44,27 @@ namespace AnikiHelper.Services.Visualizer
         private int samplesSinceFft;
         private int sampleRate = 48000;
         private DateTime lastDataUtc = DateTime.MinValue;
-        private WasapiLoopbackCapture capture;
+        private WasapiCapture capture;
+
+        /// <summary>
+        /// Loopback capture with a 20 ms buffer (NAudio's default is 100 ms, read in 50 ms
+        /// chunks), so sound reaches the visualizer almost as soon as Windows plays it.
+        /// </summary>
+        private sealed class LowLatencyLoopbackCapture : WasapiCapture
+        {
+            public LowLatencyLoopbackCapture()
+                : base(new NAudio.CoreAudioApi.MMDeviceEnumerator().GetDefaultAudioEndpoint(
+                           NAudio.CoreAudioApi.DataFlow.Render, NAudio.CoreAudioApi.Role.Multimedia),
+                       false,
+                       20)
+            {
+            }
+
+            protected override NAudio.CoreAudioApi.AudioClientStreamFlags GetAudioClientStreamFlags()
+            {
+                return NAudio.CoreAudioApi.AudioClientStreamFlags.Loopback;
+            }
+        }
 
         private float bassAverage;
         private float beat;
@@ -73,7 +94,7 @@ namespace AnikiHelper.Services.Visualizer
             Stop();
             try
             {
-                capture = new WasapiLoopbackCapture();
+                capture = new LowLatencyLoopbackCapture();
                 sampleRate = capture.WaveFormat.SampleRate;
                 capture.DataAvailable += OnDataAvailable;
                 capture.RecordingStopped += (s, e) =>
@@ -114,7 +135,7 @@ namespace AnikiHelper.Services.Visualizer
 
         private void OnDataAvailable(object sender, WaveInEventArgs e)
         {
-            var source = sender as WasapiLoopbackCapture;
+            var source = sender as WasapiCapture;
             if (source == null || e.BytesRecorded <= 0)
             {
                 return;
@@ -152,7 +173,7 @@ namespace AnikiHelper.Services.Visualizer
                 samplesSinceFft++;
             }
 
-            if (samplesSinceFft >= 512)
+            if (samplesSinceFft >= 256)
             {
                 samplesSinceFft = 0;
                 RunFft();
@@ -209,7 +230,8 @@ namespace AnikiHelper.Services.Visualizer
                 {
                     var target = silent ? 0f : latestBands[i];
                     // Fast attack, slower release.
-                    var rate = target > smoothBands[i] ? 18.0 : 5.0;
+                    // Near-instant rise, quick fall: visuals follow the music tightly.
+                    var rate = target > smoothBands[i] ? 60.0 : 11.0;
                     smoothBands[i] += (float)((target - smoothBands[i]) * (1 - Math.Exp(-rate * deltaSeconds)));
                 }
             }

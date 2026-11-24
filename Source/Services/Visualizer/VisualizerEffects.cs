@@ -42,8 +42,12 @@ namespace AnikiHelper.Services.Visualizer
     {
         private const int Columns = 64;
         private const int Rows = 46;
-        private const double RowSpacing = 0.38;
-        private const double NearDistance = 2.2;
+        private const double RowSpacing = 0.55;
+        private const double NearDistance = 3.2;
+        private const double Spread = 13.0;
+        private const double CameraHeight = 5.5;
+        private const double PitchDegrees = 30;
+        private const double SwayDegrees = 6;
         private const double StepSeconds = 1.0 / 24;
 
         private readonly List<float[]> history = new List<float[]>();
@@ -82,30 +86,36 @@ namespace AnikiHelper.Services.Visualizer
 
             var width = size.Width;
             var height = size.Height;
-            var horizon = height * 0.55;
-            var focal = height * 0.62;
-            var cameraHeight = 0.9 - (audio.Beat * 0.06);
-            var spread = 9.0;
+            var focal = height * 0.95;
+            var centreX = width / 2;
+            var centreY = height * 0.5;
+
+            // Camera looks down at 30 degrees and slowly sways left/right.
+            var pitch = PitchDegrees * Math.PI / 180;
+            var yaw = SwayDegrees * Math.PI / 180 * Math.Sin(time * 0.12);
+            var cosPitch = Math.Cos(pitch);
+            var sinPitch = Math.Sin(pitch);
+            var cosYaw = Math.Cos(yaw);
+            var sinYaw = Math.Sin(yaw);
+            var cameraHeight = CameraHeight + (audio.Beat * 0.15);
 
             var points = new Point[Rows, Columns];
             for (var r = 0; r < Rows; r++)
             {
                 var z = NearDistance + ((r - scroll) * RowSpacing);
-                if (z < NearDistance * 0.8)
-                {
-                    z = NearDistance * 0.8;
-                }
-
                 var row = r < history.Count ? history[r] : null;
                 for (var c = 0; c < Columns; c++)
                 {
-                    var x = ((c / (double)(Columns - 1)) * 2 - 1) * spread;
+                    var x = ((c / (double)(Columns - 1)) * 2 - 1) * Spread;
                     var amplitude = row == null ? 0 : row[c];
-                    var hills = 0.08 * Math.Sin((c * 0.45) + (time * 0.6)) * Math.Cos((r * 0.3) - (time * 0.4));
-                    var y = (amplitude * amplitude * 1.25) + hills;
-                    points[r, c] = new Point(
-                        (width / 2) + (x * focal / z),
-                        horizon + ((cameraHeight - y) * focal / z));
+                    var y = amplitude * amplitude * 2.2;
+
+                    var dy = y - cameraHeight;
+                    var x1 = (x * cosYaw) - (z * sinYaw);
+                    var z1 = (x * sinYaw) + (z * cosYaw);
+                    var y2 = (dy * cosPitch) + (z1 * sinPitch);
+                    var z2 = Math.Max(0.5, (-dy * sinPitch) + (z1 * cosPitch));
+                    points[r, c] = new Point(centreX + (x1 * focal / z2), centreY - (y2 * focal / z2));
                 }
             }
 

@@ -352,10 +352,6 @@ namespace AnikiHelper.Services.Visualizer
             surface.Delta = delta;
             surface.InvalidateVisual();
 
-            // The cover breathes with the bass.
-            var pulse = 1 + (audio.Bass * 0.035) + (audio.Beat * 0.03);
-            coverScale.ScaleX = pulse;
-            coverScale.ScaleY = pulse;
         }
 
         private void NextEffect(int step)
@@ -743,7 +739,7 @@ namespace AnikiHelper.Services.Visualizer
     </Grid>
 
     <StackPanel VerticalAlignment='Center' HorizontalAlignment='Center' Margin='0,40,0,0'>
-      <Border x:Name='CoverFrame' Width='380' Height='380' BorderBrush='#FFFFFF' BorderThickness='7'
+      <Border x:Name='CoverFrame' Width='437' Height='437' BorderBrush='#FFFFFF' BorderThickness='7'
               Background='#14FFFFFF' RenderTransformOrigin='0.5,0.5'>
         <Border.RenderTransform>
           <ScaleTransform x:Name='CoverScale' ScaleX='1' ScaleY='1'/>

@@ -68,6 +68,7 @@ namespace AnikiHelper.Services.Spotify
         private readonly ObservableCollection<SpotifyListItem> playlistItems = new ObservableCollection<SpotifyListItem>();
 
         private Window window;
+        private double targetTop;
         private FrameworkElement root;
         private TranslateTransform slide;
         private Grid mainView;
@@ -158,6 +159,23 @@ namespace AnikiHelper.Services.Spotify
             watchTimer = new DispatcherTimer(DispatcherPriority.Background) { Interval = TimeSpan.FromSeconds(3) };
             watchTimer.Tick += async (s, e) => await WatchNowPlayingAsync();
             watchTimer.Start();
+
+            var prewarm = new DispatcherTimer(DispatcherPriority.ApplicationIdle) { Interval = TimeSpan.FromSeconds(6) };
+            prewarm.Tick += (s, e) =>
+            {
+                prewarm.Stop();
+                try
+                {
+                    if (window == null && Application.Current?.MainWindow?.IsLoaded == true)
+                    {
+                        EnsureWindow();
+                    }
+                }
+                catch
+                {
+                }
+            };
+            prewarm.Start();
         }
 
         private async Task WatchNowPlayingAsync()
@@ -285,25 +303,33 @@ namespace AnikiHelper.Services.Spotify
                 try
                 {
                     EnsureWindow();
+                    if (window.Owner == null && Application.Current?.MainWindow?.IsLoaded == true && Application.Current.MainWindow != window)
+                    {
+                        try { window.Owner = Application.Current.MainWindow; } catch { }
+                    }
+
                     api.Reload();
                     PositionWindow(anchor);
                     closing = false;
                     IsOpen = true;
+                    window.BeginAnimation(Window.TopProperty, null);
+                    window.Top = targetTop - window.Height;
                     window.Show();
                     window.Activate();
                     AcquireExclusiveController();
                     OpenStateChanged?.Invoke(true);
 
-                    slide.Y = -root.Height;
-                    root.CacheMode = new BitmapCache { SnapsToDevicePixels = true };
-                    var anim = new DoubleAnimation(-root.Height, 0, TimeSpan.FromMilliseconds(380))
+                    // Slide the window itself: moving a window doesn't redraw its contents,
+                    // so the motion stays smooth even though the panel is large.
+                    slide.BeginAnimation(TranslateTransform.YProperty, null);
+                    slide.Y = 0;
+                    root.BeginAnimation(UIElement.OpacityProperty, null);
+                    root.Opacity = 1;
+                    var anim = new DoubleAnimation(targetTop - window.Height, targetTop, TimeSpan.FromMilliseconds(380))
                     {
                         EasingFunction = new QuinticEase { EasingMode = EasingMode.EaseOut }
                     };
-                    Timeline.SetDesiredFrameRate(anim, 60);
-                    anim.Completed += (s, e) => root.CacheMode = null;
-                    slide.BeginAnimation(TranslateTransform.YProperty, anim);
-                    root.BeginAnimation(UIElement.OpacityProperty, new DoubleAnimation(0.2, 1, TimeSpan.FromMilliseconds(220)));
+                    window.BeginAnimation(Window.TopProperty, anim);
 
                     UpdateViewForAuthState();
                 }
@@ -330,25 +356,22 @@ namespace AnikiHelper.Services.Spotify
                 CloseSide(false);
                 ReleaseExclusiveController();
 
-                root.CacheMode = new BitmapCache { SnapsToDevicePixels = true };
-                var anim = new DoubleAnimation(slide.Y, -root.Height, TimeSpan.FromMilliseconds(260))
+                var anim = new DoubleAnimation(window.Top, targetTop - window.Height, TimeSpan.FromMilliseconds(260))
                 {
                     EasingFunction = new CubicEase { EasingMode = EasingMode.EaseIn }
                 };
-                Timeline.SetDesiredFrameRate(anim, 60);
-                root.BeginAnimation(UIElement.OpacityProperty, new DoubleAnimation(root.Opacity, 0.3, TimeSpan.FromMilliseconds(260)));
                 anim.Completed += (s, e) =>
                 {
                     if (closing)
                     {
-                        root.CacheMode = null;
                         window.Hide();
+                        window.BeginAnimation(Window.TopProperty, null);
                         closing = false;
                         ActivatePlayniteMainWindow();
                         LogWindowStateSoon();
                     }
                 };
-                slide.BeginAnimation(TranslateTransform.YProperty, anim);
+                window.BeginAnimation(Window.TopProperty, anim);
                 OpenStateChanged?.Invoke(false);
                 ActivatePlayniteMainWindow();
             });
@@ -463,6 +486,7 @@ namespace AnikiHelper.Services.Spotify
             window.Height = height * scale;
             window.Left = left;
             window.Top = screenTop;
+            targetTop = screenTop;
             root.Width = width;
             root.Height = height;
 
@@ -1578,9 +1602,22 @@ namespace AnikiHelper.Services.Spotify
             return PlayerCommandAsync(HttpMethod.Post, "/me/player/next", null);
         }
 
-        private Task PreviousAsync()
+        private async Task PreviousAsync()
         {
-            return PlayerCommandAsync(HttpMethod.Post, "/me/player/previous", null);
+            var result = await api.SendAsync(HttpMethod.Post, "/me/player/previous");
+            if (result.Status == 403)
+            {
+                // Spotify sometimes refuses "previous" (e.g. at the start of a radio/autoplay);
+                // do what its own app does and restart the current song.
+                await api.SendAsync(HttpMethod.Put, "/me/player/seek?position_ms=0");
+            }
+            else if (result.Status == 404)
+            {
+                await PlayerCommandAsync(HttpMethod.Post, "/me/player/previous", null);
+                return;
+            }
+
+            await RefreshPlayerSoonAsync();
         }
 
         private async Task ToggleShuffleAsync()
@@ -1673,7 +1710,10 @@ namespace AnikiHelper.Services.Spotify
 
             if (result.Status == 403)
             {
-                ShowToast("Spotify refused that action (Premium is required for playback control).");
+                var reason = (string)result.Body?["error"]?["message"] ?? string.Empty;
+                ShowToast(reason.IndexOf("Restriction", StringComparison.OrdinalIgnoreCase) >= 0
+                    ? "Spotify doesn't allow that right now."
+                    : "Spotify refused that action.");
             }
             else if (!result.Ok && result.Status != 404)
             {
