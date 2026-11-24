@@ -532,8 +532,19 @@ namespace AnikiHelper.Services.WebBrowser
                 ProcessHomeDirectionalInput(state);
             }
 
+            if (state.ClosePressed)
+            {
+                logger?.Info($"[AnikiHelper][WebBrowser][CloseCheck] View/Select received | Mode={viewMode}, Active={browserWindowActive}, Bar={footerToggledOn}.");
+            }
+
             if (!TryAcceptDiscreteAction(state))
             {
+                if (state.ClosePressed)
+                {
+                    // Never drop a close because of the cooldown.
+                    InvokeOnUi(CloseCore);
+                }
+
                 return;
             }
 
@@ -590,11 +601,7 @@ namespace AnikiHelper.Services.WebBrowser
                 return;
             }
 
-            if (state.AddressPressed)
-            {
-                InvokeOnUi(OpenAddressPromptCore);
-                return;
-            }
+            // Custom: Y no longer opens the address prompt on web pages.
 
             if (state.EnterPressed)
             {
@@ -1185,7 +1192,7 @@ namespace AnikiHelper.Services.WebBrowser
             footerContainer = CreateFooter();
             Grid.SetRow(footerContainer, 0);
             footerContainer.VerticalAlignment = VerticalAlignment.Bottom;
-            footerContainer.Height = FooterHeight;
+            footerContainer.Height = FooterHeight + 24;
             footerContainer.Visibility = Visibility.Collapsed;
             root.Children.Add(footerContainer);
 
@@ -1317,11 +1324,24 @@ namespace AnikiHelper.Services.WebBrowser
             Grid.SetColumn(footerStatusText, 2);
             footerGrid.Children.Add(footerStatusText);
 
+            footerStatusText.Visibility = Visibility.Collapsed; // Custom: no site name
+            footerLegendPanel.HorizontalAlignment = HorizontalAlignment.Right;
+            footerLegendViewbox.HorizontalAlignment = HorizontalAlignment.Right;
+            try
+            {
+                footerLegendPanel.Effect = Application.Current?.TryFindResource("SoftTextShadow") as System.Windows.Media.Effects.Effect;
+            }
+            catch
+            {
+            }
+
+            var fade = new LinearGradientBrush { StartPoint = new Point(0, 0), EndPoint = new Point(0, 1) };
+            fade.GradientStops.Add(new GradientStop(Color.FromArgb(0, 0, 0, 0), 0));
+            fade.GradientStops.Add(new GradientStop(Color.FromArgb(200, 0, 0, 0), 1));
+            fade.Freeze();
             return new Border
             {
-                Background = new SolidColorBrush(Color.FromRgb(17, 17, 20)),
-                BorderBrush = new SolidColorBrush(Color.FromArgb(70, 255, 255, 255)),
-                BorderThickness = new Thickness(0, 1, 0, 0),
+                Background = fade,
                 Child = footerGrid
             };
         }
@@ -1411,19 +1431,17 @@ namespace AnikiHelper.Services.WebBrowser
             }
             else
             {
-                AddFooterLegendItem("ButtonPromptRS", "RS", "WebBrowser_LegendCursor", "Cursor");
-                AddFooterLegendItem("ButtonPromptLS", "LS", "WebBrowser_LegendScroll", "Scroll");
+                AddFooterLegendItem("ButtonPromptRS", "RS", "WebBrowser_LegendScroll", "Scroll");
                 AddFooterLegendItem("ButtonPromptA", "A", "WebBrowser_LegendSelect", "Select");
                 AddFooterLegendItem("ButtonPromptLB", "LB", "WebBrowser_LegendPrevious", "Previous");
                 AddFooterLegendItem("ButtonPromptRB", "RB", "WebBrowser_LegendNext", "Next");
                 AddFooterLegendItem("ButtonPromptStart", "Start", "WebBrowser_LegendEnter", "Enter");
                 AddFooterLegendItem("ButtonPromptX", "X", "WebBrowser_LegendKeyboard", "Keyboard");
-                AddFooterLegendItem("ButtonPromptY", "Y", "WebBrowser_LegendAddress", "Address");
                 AddFooterLegendItem("ButtonPromptDPadLeft", "\u25C0", "WebBrowser_LegendAudio", "Audio");
                 AddFooterLegendItem("ButtonPromptL3R3", "L3+R3", "WebBrowser_LegendGameMode", "Game mode");
                 AddFooterLegendItem("ButtonPromptBack", "View", "WebBrowser_LegendCloseView", "Close web view");
                 AddFooterLegendItem("ButtonPromptDPadUp", "\u25B2", "WebBrowser_LegendHideBar", "Hide bar");
-                SetFooterStatus(GetDisplayHost(SafeGetCurrentAddress()));
+                SetFooterStatus(string.Empty); // Custom: no site name in the bar
             }
         }
 
@@ -1435,6 +1453,13 @@ namespace AnikiHelper.Services.WebBrowser
         {
             if (footerLegendPanel == null)
             {
+                return;
+            }
+
+            var themed = CreateThemedPrompt(resourceKey, Loc(labelResourceKey, fallbackLabel));
+            if (themed != null)
+            {
+                footerLegendPanel.Children.Add(themed);
                 return;
             }
 
@@ -1459,6 +1484,115 @@ namespace AnikiHelper.Services.WebBrowser
             });
 
             footerLegendPanel.Children.Add(item);
+        }
+
+        private static Type themeButtonExType;
+        private static bool themeButtonExSearched;
+
+        /// <summary>
+        /// Builds a prompt with the theme's own bottom-bar button (ButtonEx + ButtonBottomMenu),
+        /// like the hub's "A Select / Dpad Navigate" hints. Null if the theme lacks it.
+        /// </summary>
+        private FrameworkElement CreateThemedPrompt(string resourceKey, string label)
+        {
+            try
+            {
+                if (!themeButtonExSearched)
+                {
+                    themeButtonExSearched = true;
+                    foreach (var assembly in AppDomain.CurrentDomain.GetAssemblies())
+                    {
+                        Type found = null;
+                        try
+                        {
+                            found = assembly.GetTypes().FirstOrDefault(t => t.Name == "ButtonEx" && typeof(ContentControl).IsAssignableFrom(t) && !t.IsAbstract);
+                        }
+                        catch
+                        {
+                        }
+
+                        if (found != null)
+                        {
+                            themeButtonExType = found;
+                            break;
+                        }
+                    }
+
+                    logger?.Info("[AnikiHelper][WebBrowser][Prompt] Theme button type: " + (themeButtonExType?.FullName ?? "not found"));
+                }
+
+                var style = (windowHost?.TryFindResource("ButtonBottomMenu") ?? Application.Current?.TryFindResource("ButtonBottomMenu")) as Style;
+                if (themeButtonExType == null || style == null || (style.TargetType != null && !style.TargetType.IsAssignableFrom(themeButtonExType)))
+                {
+                    return null;
+                }
+
+                var tag = ThemeTagFor(resourceKey);
+                var button = (ContentControl)Activator.CreateInstance(themeButtonExType);
+                button.Style = style;
+                button.Tag = tag;
+                button.Content = label;
+                button.Focusable = false;
+                button.IsTabStop = false;
+                button.IsHitTestVisible = false;
+                button.VerticalAlignment = VerticalAlignment.Center;
+                button.Loaded += (s, e) => LogPromptRender(button, tag);
+                return button;
+            }
+            catch (Exception ex)
+            {
+                logger?.Warn(ex, "[AnikiHelper][WebBrowser] Themed prompt failed: " + resourceKey);
+                return null;
+            }
+        }
+
+        private static string ThemeTagFor(string resourceKey)
+        {
+            switch (resourceKey)
+            {
+                case "ButtonPromptBack": return "Back";
+                case "ButtonPromptDPadLeft":
+                case "ButtonPromptDPadUp": return "Dpad";
+                case "ButtonPromptL3R3": return "LS";
+                default:
+                    return resourceKey.StartsWith("ButtonPrompt", StringComparison.Ordinal)
+                        ? resourceKey.Substring("ButtonPrompt".Length)
+                        : resourceKey;
+            }
+        }
+
+        private void LogPromptRender(Control button, string tag)
+        {
+            try
+            {
+                var images = 0;
+                var withSource = 0;
+                var stack = new Stack<DependencyObject>();
+                stack.Push(button);
+                while (stack.Count > 0)
+                {
+                    var node = stack.Pop();
+                    var image = node as Image;
+                    if (image != null && image.IsVisible)
+                    {
+                        images++;
+                        if (image.Source != null)
+                        {
+                            withSource++;
+                        }
+                    }
+
+                    for (var i = 0; i < VisualTreeHelper.GetChildrenCount(node); i++)
+                    {
+                        stack.Push(VisualTreeHelper.GetChild(node, i));
+                    }
+                }
+
+                logger?.Info("[AnikiHelper][WebBrowser][Prompt] Tag=" + tag + " images=" + images + " withSource=" + withSource);
+            }
+            catch
+            {
+            }
         }
 
         private FrameworkElement CreateControllerPrompt(string resourceKey, string fallbackButtonText)
@@ -2006,7 +2140,7 @@ namespace AnikiHelper.Services.WebBrowser
 
             if (e.IsSuccess)
             {
-                SetFooterStatus(GetDisplayHost(SafeGetCurrentAddress()));
+                SetFooterStatus(string.Empty); // Custom: no site name in the bar
             }
             else
             {
@@ -3734,8 +3868,9 @@ namespace AnikiHelper.Services.WebBrowser
 
                 // Match Aniki Helper's global gamepad mouse controls:
                 // right stick moves the pointer, left stick scrolls.
-                var normalizedX = NormalizeAxis(state.RightX);
-                var normalizedY = NormalizeAxis(state.RightY);
+                // Custom: on web pages the LEFT stick moves the pointer and the right stick scrolls.
+                var normalizedX = NormalizeAxis(state.LeftX);
+                var normalizedY = NormalizeAxis(state.LeftY);
                 var deltaX = CalculateCursorDelta(normalizedX);
                 var deltaY = CalculateCursorDelta(normalizedY);
 
@@ -3766,7 +3901,7 @@ namespace AnikiHelper.Services.WebBrowser
                 // notches, send small high-resolution wheel deltas every frame with eased
                 // acceleration and a short glide when the stick is released.
                 wheelAccumulator = 0;
-                var stickScrollDirection = -NormalizeAxis(state.LeftY);
+                var stickScrollDirection = -NormalizeAxis(state.RightY);
                 var targetVelocity = 0.0;
                 if (Math.Abs(stickScrollDirection) >= 0.01)
                 {
