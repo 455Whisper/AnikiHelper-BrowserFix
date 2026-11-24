@@ -320,6 +320,7 @@ namespace AnikiHelper.Services.Spotify
                         window.Hide();
                         closing = false;
                         ActivatePlayniteMainWindow();
+                        LogWindowStateSoon();
                     }
                 };
                 slide.BeginAnimation(TranslateTransform.YProperty, anim);
@@ -330,6 +331,44 @@ namespace AnikiHelper.Services.Spotify
 
         [System.Runtime.InteropServices.DllImport("user32.dll")]
         private static extern bool SetForegroundWindow(IntPtr hwnd);
+
+        [System.Runtime.InteropServices.DllImport("user32.dll")]
+        private static extern IntPtr GetForegroundWindow();
+
+        [System.Runtime.InteropServices.DllImport("user32.dll", CharSet = System.Runtime.InteropServices.CharSet.Unicode)]
+        private static extern int GetWindowText(IntPtr hwnd, System.Text.StringBuilder text, int count);
+
+        [System.Runtime.InteropServices.DllImport("user32.dll")]
+        private static extern uint GetWindowThreadProcessId(IntPtr hwnd, out uint processId);
+
+        // Diagnostics for the "screen stays dark after closing" report.
+        private async void LogWindowStateSoon()
+        {
+            try
+            {
+                await Task.Delay(1500);
+                var main = Application.Current?.MainWindow;
+                var foreground = GetForegroundWindow();
+                var title = new System.Text.StringBuilder(256);
+                GetWindowText(foreground, title, title.Capacity);
+                uint pid;
+                GetWindowThreadProcessId(foreground, out pid);
+                string process = "?";
+                try { process = Process.GetProcessById((int)pid).ProcessName; } catch { }
+                var others = string.Join(", ", (Application.Current?.Windows.OfType<Window>() ?? Enumerable.Empty<Window>())
+                    .Where(w => w != null && w != main && w.IsVisible)
+                    .Select(w => w.GetType().Name + "('" + w.Title + "', opacity " + w.Opacity.ToString("0.00") + ")"));
+                logger?.Info(
+                    "[AnikiHelper][Spotify][CloseCheck] MainActive=" + (main?.IsActive) +
+                    " MainOpacity=" + (main?.Opacity.ToString("0.00")) +
+                    " MainEnabled=" + (main?.IsEnabled) +
+                    " Foreground='" + title + "' (" + process + ")" +
+                    " OtherVisibleWindows=[" + others + "]");
+            }
+            catch
+            {
+            }
+        }
 
         private void ActivatePlayniteMainWindow()
         {
@@ -2090,9 +2129,6 @@ namespace AnikiHelper.Services.Spotify
         <RowDefinition Height='Auto'/>
         <RowDefinition Height='*'/>
       </Grid.RowDefinitions>
-      <Button x:Name='SideToggleBtn' Grid.RowSpan='4' Panel.ZIndex='5' Style='{StaticResource IconBtn}'
-              Width='46' Height='96' FontSize='24' Foreground='#FFFFFF'
-              HorizontalAlignment='Right' VerticalAlignment='Center' Margin='0,0,4,0'/>
 
       <Grid Grid.Row='0' Margin='40,36,32,0'>
         <Grid.ColumnDefinitions>
@@ -2113,17 +2149,20 @@ namespace AnikiHelper.Services.Spotify
 
       <Grid Grid.Row='1' Margin='40,28,40,26'>
         <Grid.ColumnDefinitions>
+          <ColumnDefinition Width='Auto'/>
           <ColumnDefinition Width='*'/>
           <ColumnDefinition Width='*'/>
           <ColumnDefinition Width='Auto'/>
           <ColumnDefinition Width='*'/>
           <ColumnDefinition Width='*'/>
         </Grid.ColumnDefinitions>
-        <Button x:Name='ShuffleBtn' Grid.Column='0' Style='{StaticResource IconBtn}' FontSize='28'/>
-        <Button x:Name='PrevBtn' Grid.Column='1' Style='{StaticResource IconBtn}' FontSize='34'/>
-        <Button x:Name='PlayBtn' Grid.Column='2' Style='{StaticResource PlayBtn}'/>
-        <Button x:Name='NextBtn' Grid.Column='3' Style='{StaticResource IconBtn}' FontSize='34'/>
-        <Button x:Name='RepeatBtn' Grid.Column='4' Style='{StaticResource IconBtn}' FontSize='28'/>
+        <Button x:Name='SideToggleBtn' Grid.Column='0' Style='{StaticResource IconBtn}'
+                Width='52' Height='76' FontSize='24' Foreground='#FFFFFF' Margin='-16,0,0,0'/>
+        <Button x:Name='ShuffleBtn' Grid.Column='1' Style='{StaticResource IconBtn}' FontSize='28'/>
+        <Button x:Name='PrevBtn' Grid.Column='2' Style='{StaticResource IconBtn}' FontSize='34'/>
+        <Button x:Name='PlayBtn' Grid.Column='3' Style='{StaticResource PlayBtn}'/>
+        <Button x:Name='NextBtn' Grid.Column='4' Style='{StaticResource IconBtn}' FontSize='34'/>
+        <Button x:Name='RepeatBtn' Grid.Column='5' Style='{StaticResource IconBtn}' FontSize='28'/>
       </Grid>
 
       <Grid x:Name='ProgressTrack' Grid.Row='2' Height='4' Background='#3DFFFFFF'>
