@@ -1490,11 +1490,11 @@ namespace AnikiHelper.Services.WebBrowser
                 AddFooterLegendItem("ButtonPromptRB", "RB", "WebBrowser_LegendNext", "Next");
                 AddFooterLegendItem("ButtonPromptStart", "Start", "WebBrowser_LegendEnter", "Enter");
                 AddFooterLegendItem("ButtonPromptX", "X", "WebBrowser_LegendKeyboard", "Keyboard");
-                AddFooterLegendItem("ButtonPromptDPadLeft", "\u25C0", "WebBrowser_LegendAudio", "\u25C0  Audio");
-                AddFooterLegendItem("ButtonPromptDPadRight", "\u25B6", "WebBrowser_LegendExtensions", "\u25B6  Extensions");
+                AddFooterLegendItem("ButtonPromptDPadLeft", "\u25C0", "WebBrowser_LegendAudio", "Audio");
+                AddFooterLegendItem("ButtonPromptDPadRight", "\u25B6", "WebBrowser_LegendExtensions", "Extensions");
                 AddFooterLegendItem("ButtonPromptL3", "L3", "WebBrowser_LegendGameMode", "Game mode");
                 AddFooterLegendItem("ButtonPromptBack", "View", "WebBrowser_LegendCloseView", "Close web view");
-                AddFooterLegendItem("ButtonPromptDPadUp", "\u25B2", "WebBrowser_LegendHideBar", "\u25B2  Hide bar");
+                AddFooterLegendItem("ButtonPromptDPadUp", "\u25B2", "WebBrowser_LegendHideBar", "Hide bar");
                 SetFooterStatus(string.Empty); // Custom: no site name in the bar
             }
         }
@@ -1590,13 +1590,94 @@ namespace AnikiHelper.Services.WebBrowser
                 button.IsTabStop = false;
                 button.IsHitTestVisible = false;
                 button.VerticalAlignment = VerticalAlignment.Center;
-                button.Loaded += (s, e) => LogPromptRender(button, tag);
+                var dpadSide = resourceKey == "ButtonPromptDPadLeft" ? Dock.Left
+                    : resourceKey == "ButtonPromptDPadRight" ? Dock.Right
+                    : resourceKey == "ButtonPromptDPadUp" ? Dock.Top
+                    : resourceKey == "ButtonPromptDPadDown" ? (Dock?)Dock.Bottom : null;
+                button.Loaded += (s, e) =>
+                {
+                    LogPromptRender(button, tag);
+                    if (dpadSide.HasValue)
+                    {
+                        MarkDpadSide(button, dpadSide.Value);
+                    }
+                };
                 return button;
             }
             catch (Exception ex)
             {
                 logger?.Warn(ex, "[AnikiHelper][WebBrowser] Themed prompt failed: " + resourceKey);
                 return null;
+            }
+        }
+
+        /// <summary>
+        /// Puts a small black dot on the side of the theme's D-pad icon that is meant to be
+        /// pressed (the theme only has one generic D-pad icon).
+        /// </summary>
+        private void MarkDpadSide(Control button, Dock side)
+        {
+            try
+            {
+                FrameworkElement icon = null;
+                var stack = new Stack<DependencyObject>();
+                stack.Push(button);
+                while (stack.Count > 0 && icon == null)
+                {
+                    var node = stack.Pop();
+                    var element = node as FrameworkElement;
+                    if (element != null && element != button && element.IsVisible &&
+                        (element is Image || element is System.Windows.Shapes.Path || element is Viewbox) &&
+                        element.ActualWidth >= 8 && element.ActualHeight >= 8)
+                    {
+                        icon = element;
+                        break;
+                    }
+
+                    for (var i = VisualTreeHelper.GetChildrenCount(node) - 1; i >= 0; i--)
+                    {
+                        stack.Push(VisualTreeHelper.GetChild(node, i));
+                    }
+                }
+
+                if (icon == null)
+                {
+                    logger?.Info("[AnikiHelper][WebBrowser][Prompt] No D-pad icon element found to mark.");
+                    return;
+                }
+
+                var layer = System.Windows.Documents.AdornerLayer.GetAdornerLayer(icon);
+                layer?.Add(new DpadDotAdorner(icon, side));
+            }
+            catch (Exception ex)
+            {
+                logger?.Warn(ex, "[AnikiHelper][WebBrowser][Prompt] Could not mark the D-pad side.");
+            }
+        }
+
+        private sealed class DpadDotAdorner : System.Windows.Documents.Adorner
+        {
+            private static readonly Brush Fill = Brushes.Black;
+            private readonly Dock side;
+
+            public DpadDotAdorner(UIElement icon, Dock side) : base(icon)
+            {
+                this.side = side;
+                IsHitTestVisible = false;
+            }
+
+            protected override void OnRender(DrawingContext dc)
+            {
+                var size = AdornedElement.RenderSize;
+                var w = size.Width;
+                var h = size.Height;
+                // Centre of each arm of a plus-shaped D-pad, about a fifth in from the edge.
+                var point = side == Dock.Left ? new Point(w * 0.2, h / 2)
+                    : side == Dock.Right ? new Point(w * 0.8, h / 2)
+                    : side == Dock.Top ? new Point(w / 2, h * 0.2)
+                    : new Point(w / 2, h * 0.8);
+                var radius = Math.Max(1.5, Math.Min(w, h) * 0.09);
+                dc.DrawEllipse(Fill, null, point, radius, radius);
             }
         }
 

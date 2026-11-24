@@ -339,6 +339,14 @@ namespace AnikiHelper.Services.WebBrowser
 
             foreach (var extension in extensions)
             {
+                // Built-in Edge components, not user extensions.
+                var builtIn = extension.Name ?? string.Empty;
+                if (builtIn.StartsWith("Microsoft Clipboard", StringComparison.OrdinalIgnoreCase) ||
+                    builtIn.StartsWith("Microsoft Edge PDF", StringComparison.OrdinalIgnoreCase))
+                {
+                    continue;
+                }
+
                 var info = ExtensionInfo.Read(directoryForId(extension.Id), extension.Id, extension.Name);
                 AddRow(extension, info);
             }
