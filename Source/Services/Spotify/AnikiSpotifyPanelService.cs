@@ -1896,6 +1896,30 @@ namespace AnikiHelper.Services.Spotify
                 return;
             }
 
+            // The controls row has a fixed left-to-right order, so left/right never depends on
+            // WPF's position-based search (which could get stuck on the big play button).
+            if (direction == FocusNavigationDirection.Left || direction == FocusNavigationDirection.Right)
+            {
+                var row = new UIElement[] { sideToggleButton, shuffleButton, previousButton, playButton, nextButton, repeatButton };
+                var index = Array.IndexOf(row, focused);
+                if (index >= 0)
+                {
+                    var next = index + (direction == FocusNavigationDirection.Right ? 1 : -1);
+                    if (next >= 0 && next < row.Length)
+                    {
+                        row[next].Focus();
+                        Keyboard.Focus(row[next]);
+                    }
+                    else if (next >= row.Length && IsSideOpen)
+                    {
+                        // Past "repeat": continue into the volume box.
+                        focused.MoveFocus(new TraversalRequest(direction));
+                    }
+
+                    return;
+                }
+            }
+
             var slider = focused as Slider;
             if (slider != null && (direction == FocusNavigationDirection.Left || direction == FocusNavigationDirection.Right))
             {
