@@ -983,19 +983,83 @@ namespace AnikiHelper.Services.Spotify
             return false;
         }
 
+        // Playnite/Steam also turn the controller into arrow/Enter key presses. Handle those here
+        // through the same de-duplicated path as controller events, so one press = one action
+        // (otherwise WPF's own key navigation moves a second time and buttons click twice).
         private void Window_PreviewKeyDown(object sender, KeyEventArgs e)
         {
             switch (e.Key)
             {
-                case Key.Escape:
-                    Close();
+                case Key.Up:
+                case Key.Down:
+                case Key.Left:
+                case Key.Right:
                     e.Handled = true;
+                    if (!e.IsRepeat)
+                    {
+                        Move(e.Key == Key.Up ? FocusNavigationDirection.Up
+                            : e.Key == Key.Down ? FocusNavigationDirection.Down
+                            : e.Key == Key.Left ? FocusNavigationDirection.Left
+                            : FocusNavigationDirection.Right);
+                    }
+
+                    break;
+                case Key.Enter:
+                case Key.Space:
+                    e.Handled = true;
+                    if (!e.IsRepeat)
+                    {
+                        ActivateFocused();
+                    }
+
+                    break;
+                case Key.Escape:
+                case Key.Back:
+                case Key.BrowserBack:
+                    e.Handled = true;
+                    if ((DateTime.UtcNow - lastBackUtc).TotalMilliseconds <= 250)
+                    {
+                        break;
+                    }
+
+                    lastBackUtc = DateTime.UtcNow;
+                    if (IsSideOpen)
+                    {
+                        CloseSide(true);
+                    }
+                    else
+                    {
+                        Close();
+                    }
+
                     break;
                 case Key.MediaPlayPause:
-                case Key.Space when !(Keyboard.FocusedElement is ButtonBase):
-                    var ignored = TogglePlayAsync();
                     e.Handled = true;
+                    var ignored = TogglePlayAsync();
                     break;
+            }
+        }
+
+        private DateTime lastActivateUtc = DateTime.MinValue;
+        private DateTime lastBackUtc = DateTime.MinValue;
+
+        private void ActivateFocused()
+        {
+            var now = DateTime.UtcNow;
+            if ((now - lastActivateUtc).TotalMilliseconds < 250)
+            {
+                return;
+            }
+
+            lastActivateUtc = now;
+            var button = Keyboard.FocusedElement as ButtonBase;
+            if (button != null && IsInside(button, windowHost))
+            {
+                Invoke(button);
+            }
+            else
+            {
+                FocusLater(mainView.Visibility == Visibility.Visible ? playButton : setupPrimary);
             }
         }
 
@@ -1716,13 +1780,24 @@ namespace AnikiHelper.Services.Spotify
 
                 if (state.BackPressed && IsSideOpen)
                 {
-                    CloseSide(true);
+                    if ((DateTime.UtcNow - lastBackUtc).TotalMilliseconds > 250)
+                    {
+                        lastBackUtc = DateTime.UtcNow;
+                        CloseSide(true);
+                    }
+
                     return;
                 }
 
                 if (state.BackPressed || state.ClosePressed)
                 {
-                    Close();
+                    // Same press may also arrive as an Escape key; only act once.
+                    if ((DateTime.UtcNow - lastBackUtc).TotalMilliseconds > 250)
+                    {
+                        lastBackUtc = DateTime.UtcNow;
+                        Close();
+                    }
+
                     return;
                 }
 
@@ -1733,15 +1808,7 @@ namespace AnikiHelper.Services.Spotify
 
                 if (state.ActivatePressed)
                 {
-                    var button = Keyboard.FocusedElement as ButtonBase;
-                    if (button != null && IsInside(button, windowHost))
-                    {
-                        Invoke(button);
-                    }
-                    else
-                    {
-                        FocusLater(mainView.Visibility == Visibility.Visible ? playButton : setupPrimary);
-                    }
+                    ActivateFocused();
                 }
 
                 if (mainView.Visibility != Visibility.Visible)
