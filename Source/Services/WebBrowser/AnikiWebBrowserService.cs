@@ -476,7 +476,16 @@ namespace AnikiHelper.Services.WebBrowser
                     QueueControllerFocusRecovery();
                 }
 
-                return;
+                // Custom: on a web page, don't swallow the press that brings the browser back —
+                // the D-pad shortcuts (audio, extensions, bar, add) act on the same press.
+                var dpadShortcut = state.DPadLeftPressed || state.DPadRightPressed || state.DPadUpPressed || state.DPadDownPressed;
+                if (!(viewMode == AnikiWebBrowserViewMode.Web && dpadShortcut && windowHost != null && windowHost.IsVisible))
+                {
+                    return;
+                }
+
+                logger?.Info("[AnikiHelper][WebBrowser][Focus] D-pad shortcut while the browser was inactive; reactivating and acting on the same press.");
+                InvokeOnUi(BringBrowserToForeground);
             }
 
             // Restore native pointer state after keyboard/WebView focus handoffs.
@@ -1252,7 +1261,8 @@ namespace AnikiHelper.Services.WebBrowser
                 () => environment,
                 GetCustomExtensionsFolder,
                 ExtensionDirectoryFor,
-                RemoveExtensionAsync);
+                RemoveExtensionAsync,
+                OpenExtensionPageInBrowserCore);
             Grid.SetRow(extensionsOverlay.Element, 0);
             root.Children.Add(extensionsOverlay.Element);
 
@@ -2206,6 +2216,17 @@ namespace AnikiHelper.Services.WebBrowser
             // controller routing. Home will reacquire exclusivity when the browser activates.
             ReleaseExclusiveControllerProcessing();
             pointerController.SuspendInput();
+            var foreground = string.Empty;
+            try
+            {
+                var other = Application.Current?.Windows.Cast<Window>().FirstOrDefault(w => w != windowHost && w.IsActive);
+                foreground = other != null ? other.GetType().FullName + " '" + other.Title + "'" : "(another app)";
+            }
+            catch
+            {
+            }
+
+            logger?.Info("[AnikiHelper][WebBrowser][Focus] Browser lost focus to " + foreground + " (mode " + viewMode + ").");
             global::AnikiHelper.AnikiLog.Debug(logger, 
                 $"[AnikiHelper][WebBrowser][Focus] Deactivated | Visible={IsOpen}, HostActive={windowHost?.IsActive == true}, Mode={viewMode}, WebViewFocusWithin={webView?.IsKeyboardFocusWithin == true}. Controller ownership retained while the browser remains visible.");
         }
@@ -3377,6 +3398,22 @@ namespace AnikiHelper.Services.WebBrowser
             {
                 logger.Warn(ex, "[AnikiHelper][WebBrowser][Extensions] Could not remove " + id);
                 return false;
+            }
+        }
+
+        /// <summary>Extension settings: open full-size in the main browser view (LB goes back).</summary>
+        private void OpenExtensionPageInBrowserCore(string url)
+        {
+            CloseExtensionsOverlayCore();
+            try
+            {
+                webView?.CoreWebView2?.Navigate(url);
+                webView?.Focus();
+                logger.Info("[AnikiHelper][WebBrowser][Extensions] Opened in the browser: " + url);
+            }
+            catch (Exception ex)
+            {
+                logger.Warn(ex, "[AnikiHelper][WebBrowser][Extensions] Could not open " + url);
             }
         }
 

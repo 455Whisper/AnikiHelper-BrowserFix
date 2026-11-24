@@ -39,6 +39,7 @@ namespace AnikiHelper.Services.WebBrowser
         private readonly Func<string> folder;
         private readonly Func<string, string> directoryForId;
         private readonly Func<string, Task<bool>> removeExtension;
+        private readonly Action<string> openInBrowser;
 
         private readonly Border root;
         private readonly StackPanel list;
@@ -58,8 +59,10 @@ namespace AnikiHelper.Services.WebBrowser
             Func<CoreWebView2Environment> environment,
             Func<string> folder,
             Func<string, string> directoryForId,
-            Func<string, Task<bool>> removeExtension)
+            Func<string, Task<bool>> removeExtension,
+            Action<string> openInBrowser)
         {
+            this.openInBrowser = openInBrowser;
             this.removeExtension = removeExtension;
             this.logger = logger;
             this.mainCore = mainCore;
@@ -395,7 +398,7 @@ namespace AnikiHelper.Services.WebBrowser
                 }
                 else if (!string.IsNullOrEmpty(info.OptionsPath))
                 {
-                    var t = ShowPageAsync(info.Name + " – Settings", info.PageUrl(info.OptionsPath));
+                    openInBrowser?.Invoke(info.PageUrl(info.OptionsPath));
                 }
             };
             row.Children.Add(mainButton);
@@ -404,7 +407,7 @@ namespace AnikiHelper.Services.WebBrowser
             if (!string.IsNullOrEmpty(info.OptionsPath))
             {
                 var gear = MakeIconButton("", "Settings");
-                gear.Click += (s, e) => { var t = ShowPageAsync(info.Name + " – Settings", info.PageUrl(info.OptionsPath)); };
+                gear.Click += (s, e) => openInBrowser?.Invoke(info.PageUrl(info.OptionsPath));
                 Grid.SetColumn(gear, 1);
                 row.Children.Add(gear);
                 buttons.Add(gear);
@@ -507,36 +510,46 @@ namespace AnikiHelper.Services.WebBrowser
         {
             try
             {
-                if (popupWeb == null)
+                popupTitle.Text = title;
+                listView.Visibility = Visibility.Collapsed;
+                popupView.Visibility = Visibility.Visible;
+
+                if (popupWeb == null || popupWeb.CoreWebView2 == null)
                 {
                     var env = environment();
                     if (env == null)
                     {
-                        return;
+                        throw new InvalidOperationException("Browser engine not ready.");
                     }
 
-                    popupWeb = new WebView2CompositionControl
+                    if (popupWeb == null)
                     {
-                        HorizontalAlignment = HorizontalAlignment.Stretch,
-                        VerticalAlignment = VerticalAlignment.Stretch
-                    };
-                    popupHost.Children.Add(popupWeb);
+                        popupWeb = new WebView2CompositionControl
+                        {
+                            HorizontalAlignment = HorizontalAlignment.Stretch,
+                            VerticalAlignment = VerticalAlignment.Stretch
+                        };
+                        popupHost.Children.Add(popupWeb);
+                    }
+
+                    // The view must be visible and laid out before its engine can start.
+                    await root.Dispatcher.InvokeAsync(() => { }, System.Windows.Threading.DispatcherPriority.Loaded);
                     await popupWeb.EnsureCoreWebView2Async(env);
+                    if (popupWeb.CoreWebView2 == null)
+                    {
+                        throw new InvalidOperationException("Popup view didn't start.");
+                    }
                 }
 
-                popupTitle.Text = title;
-                listView.Visibility = Visibility.Collapsed;
-                popupView.Visibility = Visibility.Visible;
                 popupWeb.CoreWebView2.Navigate(url);
                 popupWeb.Focus();
                 logger?.Info("[AnikiHelper][WebBrowser][Extensions] Opened " + url);
             }
             catch (Exception ex)
             {
-                logger?.Warn(ex, "[AnikiHelper][WebBrowser][Extensions] Could not open " + url);
-                status.Text = "Couldn't open that page.";
-                status.Visibility = Visibility.Visible;
+                logger?.Warn(ex, "[AnikiHelper][WebBrowser][Extensions] Popup view failed, opening in the browser instead: " + url);
                 ShowList();
+                openInBrowser?.Invoke(url);
             }
         }
 

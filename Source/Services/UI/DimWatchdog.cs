@@ -81,6 +81,15 @@ namespace AnikiHelper.Services.UI
             }
 
             var description = closed.GetType().FullName + " '" + closed.Title + "'";
+
+            // Only Playnite's own popups (progress, dialogs, text input) can leave the main window
+            // dimmed. Our toasts/panels closing must not pull focus back to Playnite — that stole
+            // focus from the web browser / visualizer.
+            if (!closed.GetType().FullName.StartsWith("Playnite.", StringComparison.Ordinal))
+            {
+                return;
+            }
+
             Later(600, () =>
             {
                 try
@@ -88,8 +97,9 @@ namespace AnikiHelper.Services.UI
                     logger?.Info("[AnikiHelper][DimCheck] Window closed: " + description +
                                  " | MainActive=" + main.IsActive + " Focus=" + Describe(Keyboard.FocusedElement as DependencyObject));
 
-                    if (!main.IsVisible)
+                    if (!main.IsVisible || OtherLargeWindowOpen(main))
                     {
+                        Later(1500, () => ClearStuckChildOpened(main));
                         return;
                     }
 
@@ -128,6 +138,20 @@ namespace AnikiHelper.Services.UI
         /// is set. Opening and closing several progress windows quickly (game import) can leave
         /// the flag stuck on with nothing open. Clear it when no Playnite popup is actually showing.
         /// </summary>
+        /// <summary>A full-screen window of ours (browser, visualizer) is in front: leave focus alone.</summary>
+        private static bool OtherLargeWindowOpen(Window main)
+        {
+            foreach (Window other in Application.Current.Windows)
+            {
+                if (other != main && other.IsVisible && other.ActualWidth >= main.ActualWidth * 0.6 && other.ActualHeight >= main.ActualHeight * 0.6)
+                {
+                    return true;
+                }
+            }
+
+            return false;
+        }
+
         private void ClearStuckChildOpened(Window main)
         {
             try
