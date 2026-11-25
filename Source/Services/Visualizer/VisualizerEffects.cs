@@ -349,10 +349,10 @@ namespace AnikiHelper.Services.Visualizer
                         // rise as rounded ridges instead of single stiff spikes.
                         var i = (s + (r * 2)) % Spokes;
                         var hit = (source[(i + Spokes - 1) % Spokes] + (2 * source[i]) + source[(i + 1) % Spokes]) / 4;
-                        var spike = Math.Pow(hit, 1.6) * 1.1 * (0.5 + (spiralEnergy * 0.8)) * tread;
+                        var spike = Math.Pow(hit, 1.6) * 1.43 * (0.5 + (spiralEnergy * 0.8)) * tread;
 
-                        // Soft cap: peaks never grow taller than about two-thirds of a step.
-                        spike = 1.17 * (1 - Math.Exp(-spike / 1.17));
+                        // Soft cap: peaks never grow taller than about nine-tenths of a step.
+                        spike = 1.52 * (1 - Math.Exp(-spike / 1.52));
                         edgeGlow = Math.Max(Math.Sin(riser * Math.PI), 1 - SmoothStep(0.0, 0.06, f));
                         stairHeight = (((radial * SpiralTurns) - f + riser) * StepHeight) + (texture * (0.4 + spiralEnergy) * (0.3 + (0.7 * tread))) + spike;
                         amplitude = (float)Math.Min(1.0, 0.3 + (0.6 * Math.Sin(riser * Math.PI) * (0.6 + spiralEnergy)) + texture + (0.1 * radial) + (spike * 0.45));
