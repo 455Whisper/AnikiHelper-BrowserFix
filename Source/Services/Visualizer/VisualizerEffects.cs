@@ -149,9 +149,10 @@ namespace AnikiHelper.Services.Visualizer
                 // out round crests and troughs that travel outward together.
                 var target = Math.Max(audio.Bass * 0.95, Math.Max(audio.Onset * 0.8, audio.Beat));
                 waveEnvelope = Math.Max(target, waveEnvelope * Math.Exp(-2.6 * delta));
-                wavePhase += delta * Math.PI * 2 * 1.7;
-                var crest = 0.5 + (0.5 * Math.Sin(wavePhase));
-                ringValue = (float)(waveEnvelope * (0.2 + (0.8 * crest * crest)));
+                wavePhase += delta * Math.PI * 2 * 2.4;
+
+                // Signed: crests rise above the surface and troughs dip below it.
+                ringValue = (float)(Math.Max(0.12, waveEnvelope) * Math.Sin(wavePhase));
             }
 
             for (var s = 0; s < Spokes; s++)
@@ -179,7 +180,7 @@ namespace AnikiHelper.Services.Visualizer
             var centre = history[newest];
             for (var s = 0; s < Spokes; s++)
             {
-                centre[s] = Math.Max(centre[s], spokeSpectrum[s]);
+                centre[s] = rings ? spokeSpectrum[s] : Math.Max(centre[s], spokeSpectrum[s]);
             }
 
             EnsureBuffers(size);
@@ -206,7 +207,10 @@ namespace AnikiHelper.Services.Visualizer
                 {
                     var angle = (s / (double)Spokes * Math.PI * 2) + spin;
                     var amplitude = row == null ? centre[s] : row[s];
-                    var peak = Math.Pow(amplitude, 1.35) * PeakScale * fade * (r == 0 ? 0.6 : 1);
+                    var peak = Style == 0
+                        ? amplitude * 2.6 * fade
+                        : Math.Pow(amplitude, 1.35) * PeakScale * fade * (r == 0 ? 0.6 : 1);
+                    amplitude = Math.Abs(amplitude);
                     var x = Math.Cos(angle) * radius;
                     var z = Math.Sin(angle) * radius;
                     var y = dome + peak + (lift * (1 - radial));
