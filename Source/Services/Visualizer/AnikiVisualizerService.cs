@@ -441,6 +441,7 @@ namespace AnikiHelper.Services.Visualizer
 
         private bool leftTriggerDown;
         private bool leftStickDown;
+        private DateTime lastStyleSwitchUtc = DateTime.MinValue;
         private bool infoHidden;
         private FrameworkElement infoPanel;
         private string lastTrackUri;
@@ -456,7 +457,15 @@ namespace AnikiHelper.Services.Visualizer
                 return;
             }
 
+            var now = DateTime.UtcNow;
+            if ((now - lastStyleSwitchUtc).TotalMilliseconds < 200)
+            {
+                return;
+            }
+
+            lastStyleSwitchUtc = now;
             effect.Style = ((effect.Style + step) % effect.StyleCount + effect.StyleCount) % effect.StyleCount;
+            logger?.Info("[AnikiHelper][Visualizer] Style -> " + effect.Name + " / " + effect.StyleName);
             ShowEffectName();
         }
 
@@ -518,7 +527,9 @@ namespace AnikiHelper.Services.Visualizer
                 lastTrackUri = uri;
             }
 
-            if (changed && IsOpen && ((bool?)body["is_playing"] ?? false))
+            // Not while the Spotify panel is open: it already shows the song, and raising the card
+            // (owned by the visualizer) pulled the visualizer above the panel, hiding it.
+            if (changed && IsOpen && !spotify.IsOpen && ((bool?)body["is_playing"] ?? false))
             {
                 ShowSongToast(titleText.Text, artistText.Text, AnikiSpotifyPanelService.PickImage(images, 300),
                     (double?)body["progress_ms"] ?? 0, (double?)item["duration_ms"] ?? 0);
@@ -641,6 +652,14 @@ namespace AnikiHelper.Services.Visualizer
 
         private void Window_PreviewKeyDown(object sender, KeyEventArgs e)
         {
+            // The Spotify panel is open over the visualizer and gets the controller. A stray
+            // Enter here (from A) would press the visualizer's "Spotify" button and close it.
+            if (spotify.IsOpen)
+            {
+                e.Handled = true;
+                return;
+            }
+
             switch (e.Key)
             {
                 case Key.Left:
@@ -670,12 +689,14 @@ namespace AnikiHelper.Services.Visualizer
                     Back();
                     break;
                 case Key.PageUp:
-                    e.Handled = true;
-                    NextEffect(-1);
-                    break;
                 case Key.PageDown:
+                case Key.Home:
+                case Key.End:
+                    // Playnite turns the triggers (and bumpers) into these keys for its own lists.
+                    // The controller listener already handles LB/RB/LT/RT, so acting on these too
+                    // made a trigger press also jump to the next effect. Swallow them.
                     e.Handled = true;
-                    NextEffect(1);
+                    logger?.Info("[AnikiHelper][Visualizer] Ignored key " + e.Key + " (controller handles it).");
                     break;
             }
         }

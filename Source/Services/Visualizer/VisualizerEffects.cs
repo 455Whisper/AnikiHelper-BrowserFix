@@ -150,6 +150,30 @@ namespace AnikiHelper.Services.Visualizer
         }
 
         private readonly float[] waveHistory = new float[Rings];
+        private double colourWash;
+        private double hueBase = 0.55;
+
+        private static Color Hsv(double hue, double saturation, double value)
+        {
+            hue = (hue - Math.Floor(hue)) * 6;
+            var sector = (int)hue % 6;
+            var f = hue - Math.Floor(hue);
+            var p = value * (1 - saturation);
+            var q = value * (1 - (saturation * f));
+            var t = value * (1 - (saturation * (1 - f)));
+            double r, g, b;
+            switch (sector)
+            {
+                case 0: r = value; g = t; b = p; break;
+                case 1: r = q; g = value; b = p; break;
+                case 2: r = p; g = value; b = t; break;
+                case 3: r = p; g = q; b = value; break;
+                case 4: r = t; g = p; b = value; break;
+                default: r = value; g = p; b = q; break;
+            }
+
+            return Color.FromRgb((byte)(r * 255), (byte)(g * 255), (byte)(b * 255));
+        }
         private double bassFast;
         private double bassSlow;
         private float waveNow;
@@ -164,6 +188,13 @@ namespace AnikiHelper.Services.Visualizer
             // Spectrum around the circle, mirrored left/right, with a little extra detail.
             var half = Spokes / 2.0;
             var rings = Style == 0;
+            // Colour patches: strength follows how much music there is (rises quickly, fades over
+            // about a second when it goes quiet); hits nudge the colours round the wheel.
+            var music = Math.Min(1.0, (audio.Bass * 0.45) + (audio.Mid * 0.45) + (audio.Onset * 0.35));
+            music = Math.Pow(music, 1.3);
+            colourWash += (music - colourWash) * (1 - Math.Exp(-(music > colourWash ? 6.0 : 0.9) * delta));
+            hueBase += delta * (0.015 + (audio.Onset * 0.12));
+
             if (rings)
             {
                 // Water: the bass alone moves the water. A bass hit lifts the centre above its
@@ -279,7 +310,7 @@ namespace AnikiHelper.Services.Visualizer
                         var tread = (1 - riser) * SmoothStep(0.0, 0.12, f);
                         var source = row ?? centre;
                         var hit = source[((s * 13) + (r * 7)) % Spokes];
-                        var spike = Math.Pow(hit, 1.8) * 1.9 * (0.55 + spiralEnergy) * tread;
+                        var spike = Math.Pow(hit, 2.0) * 1.1 * (0.5 + (spiralEnergy * 0.8)) * tread;
                         stairHeight = (((radial * SpiralTurns) - f + riser) * StepHeight) + (texture * (0.4 + spiralEnergy)) + spike;
                         amplitude = (float)Math.Min(1.0, 0.3 + (0.6 * Math.Sin(riser * Math.PI) * (0.6 + spiralEnergy)) + texture + (0.1 * radial) + (spike * 0.45));
                     }
@@ -309,6 +340,22 @@ namespace AnikiHelper.Services.Visualizer
                     var color = spiral
                         ? (amplitude < 0.5 ? Lerp(SpiralLow, SpiralMid, amplitude * 2) : Lerp(SpiralMid, SpiralHigh, (amplitude - 0.5) * 2))
                         : heat < 0.5 ? Lerp(Rim, Mid, heat * 2) : Lerp(Mid, Peak, (heat - 0.5) * 2);
+                    // Music colour: big soft patches of changing colour drift over the surface while
+                    // music plays, and fade back to the normal colours when it goes quiet.
+                    if (colourWash > 0.01)
+                    {
+                        var n = (Math.Sin((angle * 2) + (radial * 4) + (time * 0.35)) +
+                                 Math.Sin((angle * 3) - (radial * 6) - (time * 0.27) + 1.7) +
+                                 Math.Sin(angle + (radial * 9) + (time * 0.19) + 4.1)) / 3;
+                        var mix = colourWash * SmoothStep(-0.15, 0.4, n);
+                        if (mix > 0.01)
+                        {
+                            var value = Math.Max(0.4, Math.Max(color.R, Math.Max(color.G, color.B)) / 255.0);
+                            var tint = Hsv(hueBase + (n * 0.45) + (radial * 0.2), 0.8, value);
+                            color = Lerp(color, tint, mix * 0.9);
+                        }
+                    }
+
                     pc[index] = (color.R << 16) | (color.G << 8) | color.B;
                 }
             }
