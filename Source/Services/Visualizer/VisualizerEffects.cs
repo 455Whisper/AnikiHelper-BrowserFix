@@ -34,6 +34,9 @@ namespace AnikiHelper.Services.Visualizer
         /// </summary>
         public static bool Busy;
 
+        /// <summary>Bumped by the visualizer whenever Spotify moves to a new song.</summary>
+        public static int SongChanges;
+
         public abstract void Render(DrawingContext dc, Size size, AudioFrame audio, double time, double delta);
 
         protected static Color Lerp(Color a, Color b, double t)
@@ -151,6 +154,9 @@ namespace AnikiHelper.Services.Visualizer
 
         private readonly float[] waveHistory = new float[Rings];
         private double colourWash;
+        private double colourSpread;
+        private double drainSeconds;
+        private int seenSongChanges;
         private double hueBase = 0.55;
 
         private static Color Hsv(double hue, double saturation, double value)
@@ -194,6 +200,29 @@ namespace AnikiHelper.Services.Visualizer
             music = Math.Pow(music, 1.3);
             colourWash += (music - colourWash) * (1 - Math.Exp(-(music > colourWash ? 6.0 : 0.9) * delta));
             hueBase += delta * (0.015 + (audio.Onset * 0.12));
+
+            // How far the colour has spread from the centre (0..1): fills over ~3 s once music
+            // plays, recedes in silence, and drains quickly when the song changes so the next
+            // song spreads out from the middle again.
+            if (SongChanges != seenSongChanges)
+            {
+                seenSongChanges = SongChanges;
+                drainSeconds = 0.7;
+            }
+
+            if (drainSeconds > 0)
+            {
+                drainSeconds -= delta;
+                colourSpread = Math.Max(0, colourSpread - (delta * 2.0));
+            }
+            else if (music > 0.1)
+            {
+                colourSpread = Math.Min(1, colourSpread + (delta * 0.33));
+            }
+            else
+            {
+                colourSpread = Math.Max(0, colourSpread - (delta * 0.5));
+            }
 
             if (rings)
             {
@@ -268,7 +297,7 @@ namespace AnikiHelper.Services.Visualizer
             var spiralView = Style == 2;
             var centreY = height * (spiralView ? 0.38 : 0.43);
             var cameraHeight = spiralView ? 13.0 : CameraHeight;
-            var cameraBack = spiralView ? 13.0 : CameraBack;
+            var cameraBack = spiralView ? 10.5 : CameraBack;
             var pitch = (spiralView ? 50 : PitchDegrees) * Math.PI / 180;
             var cosPitch = Math.Cos(pitch);
             var sinPitch = Math.Sin(pitch);
@@ -309,8 +338,11 @@ namespace AnikiHelper.Services.Visualizer
                         // recent history, so the peaks flicker across the treads with the music.
                         var tread = (1 - riser) * SmoothStep(0.0, 0.12, f);
                         var source = row ?? centre;
-                        var hit = source[((s * 13) + (r * 7)) % Spokes];
-                        var spike = Math.Pow(hit, 2.0) * 1.1 * (0.5 + (spiralEnergy * 0.8)) * tread;
+                        // Neighbouring points read neighbouring bands (blurred a little), so peaks
+                        // rise as rounded ridges instead of single stiff spikes.
+                        var i = (s + (r * 2)) % Spokes;
+                        var hit = (source[(i + Spokes - 1) % Spokes] + (2 * source[i]) + source[(i + 1) % Spokes]) / 4;
+                        var spike = Math.Pow(hit, 1.6) * 0.85 * (0.5 + (spiralEnergy * 0.8)) * tread;
                         stairHeight = (((radial * SpiralTurns) - f + riser) * StepHeight) + (texture * (0.4 + spiralEnergy)) + spike;
                         amplitude = (float)Math.Min(1.0, 0.3 + (0.6 * Math.Sin(riser * Math.PI) * (0.6 + spiralEnergy)) + texture + (0.1 * radial) + (spike * 0.45));
                     }
@@ -342,12 +374,16 @@ namespace AnikiHelper.Services.Visualizer
                         : heat < 0.5 ? Lerp(Rim, Mid, heat * 2) : Lerp(Mid, Peak, (heat - 0.5) * 2);
                     // Music colour: big soft patches of changing colour drift over the surface while
                     // music plays, and fade back to the normal colours when it goes quiet.
-                    if (colourWash > 0.01)
+                    if (colourWash > 0.01 && colourSpread > 0.001)
                     {
                         var n = (Math.Sin((angle * 2) + (radial * 4) + (time * 0.35)) +
                                  Math.Sin((angle * 3) - (radial * 6) - (time * 0.27) + 1.7) +
                                  Math.Sin(angle + (radial * 9) + (time * 0.19) + 4.1)) / 3;
-                        var mix = colourWash * SmoothStep(-0.15, 0.4, n);
+
+                        // The colour spreads out from the middle as a song starts until it covers
+                        // the whole surface; n only varies the hue and strength across it.
+                        var reach = SmoothStep(radial - 0.12, radial + 0.04, colourSpread * 1.16);
+                        var mix = colourWash * reach * (0.7 + (0.3 * SmoothStep(-0.6, 0.4, n)));
                         if (mix > 0.01)
                         {
                             var value = Math.Max(0.4, Math.Max(color.R, Math.Max(color.G, color.B)) / 255.0);

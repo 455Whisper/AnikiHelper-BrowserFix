@@ -527,6 +527,11 @@ namespace AnikiHelper.Services.Visualizer
                 lastTrackUri = uri;
             }
 
+            if (changed)
+            {
+                VisualEffect.SongChanges++;
+            }
+
             // Not while the Spotify panel is open: it already shows the song, and raising the card
             // (owned by the visualizer) pulled the visualizer above the panel, hiding it.
             if (changed && IsOpen && !spotify.IsOpen && ((bool?)body["is_playing"] ?? false))
