@@ -134,6 +134,14 @@ namespace AnikiHelper.Services.Visualizer
         private static readonly Color SpiralHigh = Color.FromRgb(0xF6, 0xFF, 0xDC);
         private double spiralPhase;
         private double spiralEnergy;
+        private const double SpiralTurns = 6;
+        private const double StepHeight = 1.7;
+
+        private static double SmoothStep(double a, double b, double x)
+        {
+            var t = Math.Max(0, Math.Min(1, (x - a) / (b - a)));
+            return t * t * (3 - (2 * t));
+        }
 
         private double wavePhase;
         private double waveEnvelope;
@@ -183,7 +191,7 @@ namespace AnikiHelper.Services.Visualizer
             {
                 var energy = (audio.Bass * 0.55) + (audio.Mid * 0.3) + (audio.Onset * 0.3);
                 spiralEnergy = energy > spiralEnergy ? energy : spiralEnergy + ((energy - spiralEnergy) * (1 - Math.Exp(-4 * delta)));
-                spiralPhase += delta * (0.7 + (spiralEnergy * 3.2));
+                spiralPhase += delta * (0.25 + (spiralEnergy * 1.1));
             }
             while (step >= 1)
             {
@@ -201,8 +209,11 @@ namespace AnikiHelper.Services.Visualizer
             EnsureBuffers(size);
             var focal = height * 1.2;
             var centreX = width / 2.0;
-            var centreY = height * 0.43;
-            var pitch = PitchDegrees * Math.PI / 180;
+            var spiralView = Style == 2;
+            var centreY = height * (spiralView ? 0.38 : 0.43);
+            var cameraHeight = spiralView ? 13.0 : CameraHeight;
+            var cameraBack = spiralView ? 13.0 : CameraBack;
+            var pitch = (spiralView ? 50 : PitchDegrees) * Math.PI / 180;
             var cosPitch = Math.Cos(pitch);
             var sinPitch = Math.Sin(pitch);
             var spin = time * 0.05;
@@ -222,19 +233,24 @@ namespace AnikiHelper.Services.Visualizer
                 {
                     var angle = (s / (double)Spokes * Math.PI * 2) + spin;
                     var amplitude = row == null ? centre[s] : row[s];
+                    double stairHeight = 0;
                     if (spiral)
                     {
-                        // Distance along a 5-turn spiral; tanh squares the wave into flat steps
-                        // with steep walls, and the spectrum adds a fine rough texture on top.
-                        var baseAngle = s / (double)Spokes * Math.PI * 2;
-                        var arg = (radial * 5 * Math.PI * 2) - baseAngle - (spiralPhase * Math.PI * 2);
-                        var terrace = 0.5 + (0.5 * Math.Tanh(5 * Math.Sin(arg)));
-                        var texture = spokeSpectrum[(s + (r * 7)) % Spokes] * 0.22;
-                        amplitude = (float)Math.Min(1.0, (terrace * (0.55 + (spiralEnergy * 0.6))) + texture);
+                        // Endless spiral staircase: a 6-turn helix whose treads slope gently down
+                        // around each turn (so the turns join with no seam), with a steep riser
+                        // between turns. The steps flow inward and down forever; the music adds a
+                        // rough texture and makes the walls glow.
+                        var baseAngle = s / (double)Spokes;
+                        var u = (radial * SpiralTurns) - baseAngle + spiralPhase;
+                        var f = u - Math.Floor(u);
+                        var riser = SmoothStep(0.8, 1.0, f);
+                        var texture = spokeSpectrum[(s + (r * 7)) % Spokes] * 0.25;
+                        stairHeight = (((radial * SpiralTurns) - f + riser) * StepHeight) + (texture * (0.4 + spiralEnergy));
+                        amplitude = (float)Math.Min(1.0, 0.3 + (0.6 * Math.Sin(riser * Math.PI) * (0.6 + spiralEnergy)) + texture + (0.1 * radial));
                     }
 
                     var peak = spiral
-                        ? amplitude * (1.2 + (spiralEnergy * 1.4)) * fade
+                        ? stairHeight - dome
                         : Style == 0
                         ? amplitude * 2.6 * fade
                         : Math.Pow(amplitude, 1.35) * PeakScale * fade * (r == 0 ? 0.6 : 1);
@@ -243,8 +259,8 @@ namespace AnikiHelper.Services.Visualizer
                     var z = Math.Sin(angle) * radius;
                     var y = dome + peak + (lift * (1 - radial));
 
-                    var dy = y - CameraHeight;
-                    var dz = z + CameraBack;
+                    var dy = y - cameraHeight;
+                    var dz = z + cameraBack;
                     var y2 = (dy * cosPitch) + (dz * sinPitch);
                     var z2 = Math.Max(0.5, (-dy * sinPitch) + (dz * cosPitch));
                     var index = (r * Spokes) + s;
