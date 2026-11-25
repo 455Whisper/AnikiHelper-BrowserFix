@@ -242,7 +242,7 @@ namespace AnikiHelper.Services.Visualizer
             backButton.Click += (s, e) => Close();
             spotifyButton.Click += (s, e) => spotify.Toggle(null);
             visualizerButton.Click += (s, e) => NextEffect(1);
-            effectText.Text = effects[effectIndex].Name;
+            effectText.Text = EffectDisplayName(effects[effectIndex]);
 
             window = new Window
             {
@@ -412,8 +412,35 @@ namespace AnikiHelper.Services.Visualizer
             lastEffectSwitchUtc = now;
             effectIndex = ((effectIndex + step) % effects.Count + effects.Count) % effects.Count;
             surface.Effect = effects[effectIndex];
-            effectText.Text = effects[effectIndex].Name;
-            effectToastText.Text = effects[effectIndex].Name;
+            ShowEffectName();
+        }
+
+        private bool leftTriggerDown;
+        private bool rightTriggerDown;
+
+        /// <summary>LT / RT: switch the current effect's look, if it has more than one.</summary>
+        private void NextStyle(int step)
+        {
+            var effect = effects[effectIndex];
+            if (effect.StyleCount < 2)
+            {
+                return;
+            }
+
+            effect.Style = ((effect.Style + step) % effect.StyleCount + effect.StyleCount) % effect.StyleCount;
+            ShowEffectName();
+        }
+
+        private string EffectDisplayName(VisualEffect effect)
+        {
+            return effect.StyleCount > 1 ? effect.Name + "  \u2022  " + effect.StyleName : effect.Name;
+        }
+
+        private void ShowEffectName()
+        {
+            var name = EffectDisplayName(effects[effectIndex]);
+            effectText.Text = name;
+            effectToastText.Text = name;
             effectToast.BeginAnimation(UIElement.OpacityProperty, new DoubleAnimation(0, 1, TimeSpan.FromMilliseconds(200)));
             toastTimer.Stop();
             toastTimer.Start();
@@ -498,8 +525,20 @@ namespace AnikiHelper.Services.Visualizer
         {
             RunOnUi(() =>
             {
-                if (!IsOpen || window == null || state.IsFullPadState)
+                if (!IsOpen || window == null)
                 {
+                    return;
+                }
+
+                if (state.IsFullPadState)
+                {
+                    // Triggers switch the current effect's style (pressed past ~60%).
+                    var left = state.LeftTrigger > 20000;
+                    var right = state.RightTrigger > 20000;
+                    if (left && !leftTriggerDown) { NextStyle(-1); }
+                    if (right && !rightTriggerDown) { NextStyle(1); }
+                    leftTriggerDown = state.LeftTrigger > 8000 && (left || leftTriggerDown);
+                    rightTriggerDown = state.RightTrigger > 8000 && (right || rightTriggerDown);
                     return;
                 }
 

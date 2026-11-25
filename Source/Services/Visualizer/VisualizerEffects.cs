@@ -11,6 +11,20 @@ namespace AnikiHelper.Services.Visualizer
     {
         public abstract string Name { get; }
 
+        /// <summary>Number of looks this effect has (switched with the triggers).</summary>
+        public virtual int StyleCount
+        {
+            get { return 1; }
+        }
+
+        /// <summary>Current look, 0-based.</summary>
+        public int Style { get; set; }
+
+        public virtual string StyleName
+        {
+            get { return null; }
+        }
+
         /// <summary>The display's measured refresh period (e.g. 1/59.94 s), set by the host.</summary>
         public static double FramePeriod = 1.0 / 60;
 
@@ -105,6 +119,19 @@ namespace AnikiHelper.Services.Visualizer
             get { return "Ripple"; }
         }
 
+        public override int StyleCount
+        {
+            get { return 2; }
+        }
+
+        public override string StyleName
+        {
+            get { return Style == 0 ? "Rings" : "Burst"; }
+        }
+
+        private double wavePhase;
+        private double waveEnvelope;
+
         private float[] RingAt(int age)
         {
             return history[((newest - age) % Rings + Rings) % Rings];
@@ -114,6 +141,19 @@ namespace AnikiHelper.Services.Visualizer
         {
             // Spectrum around the circle, mirrored left/right, with a little extra detail.
             var half = Spokes / 2.0;
+            var rings = Style == 0;
+            float ringValue = 0;
+            if (rings)
+            {
+                // Water: the music's level drives a slow wave at the centre, so each beat sends
+                // out round crests and troughs that travel outward together.
+                var target = Math.Max(audio.Bass * 0.95, Math.Max(audio.Onset * 0.8, audio.Beat));
+                waveEnvelope = Math.Max(target, waveEnvelope * Math.Exp(-2.6 * delta));
+                wavePhase += delta * Math.PI * 2 * 1.7;
+                var crest = 0.5 + (0.5 * Math.Sin(wavePhase));
+                ringValue = (float)(waveEnvelope * (0.2 + (0.8 * crest * crest)));
+            }
+
             for (var s = 0; s < Spokes; s++)
             {
                 var around = Math.Abs(((s + 0.5) - half) / half);
@@ -122,11 +162,13 @@ namespace AnikiHelper.Services.Visualizer
                 var t = (float)(position - i);
                 var value = (audio.Bands[i] * (1 - t)) + (audio.Bands[i + 1] * t);
                 var detail = audio.Bands[30 + ((s * 29) % (AudioFrame.BandCount - 34))];
-                spokeSpectrum[s] = (float)((1 - Math.Exp(-2.3 * ((value * 0.75f) + (detail * 0.25f)))) / 0.9);
+                spokeSpectrum[s] = rings
+                    ? ringValue * (0.92f + (detail * 0.16f))
+                    : (float)((1 - Math.Exp(-2.3 * ((value * 0.75f) + (detail * 0.25f)))) / 0.9);
             }
 
-            // One ring outward per display frame.
-            step += delta / FramePeriod;
+            // Rings travel outward a little slower than bursts, like water.
+            step += delta / FramePeriod * (rings ? 0.7 : 1.0);
             while (step >= 1)
             {
                 step -= 1;
