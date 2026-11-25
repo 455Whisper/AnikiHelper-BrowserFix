@@ -28,6 +28,12 @@ namespace AnikiHelper.Services.Visualizer
         /// <summary>The display's measured refresh period (e.g. 1/59.94 s), set by the host.</summary>
         public static double FramePeriod = 1.0 / 60;
 
+        /// <summary>
+        /// True while another panel (Spotify) is open over the visualizer and shares its UI
+        /// thread: effects then draw at a lower resolution to leave the panel time to respond.
+        /// </summary>
+        public static bool Busy;
+
         public abstract void Render(DrawingContext dc, Size size, AudioFrame audio, double time, double delta);
 
         protected static Color Lerp(Color a, Color b, double t)
@@ -367,7 +373,8 @@ namespace AnikiHelper.Services.Visualizer
         private void EnsureBuffers(Size size)
         {
             // Spiral renders at full resolution so its fine walls stay crisp.
-            var scale = Math.Min(1.0, (Style == 2 ? 1920 : MaxRenderWidth) / Math.Max(1.0, size.Width));
+            var maxWidth = Busy ? (Style == 2 ? 1280 : 900) : (Style == 2 ? 1920 : MaxRenderWidth);
+            var scale = Math.Min(1.0, maxWidth / Math.Max(1.0, size.Width));
             var w = Math.Max(16, (int)(size.Width * scale));
             var h = Math.Max(16, (int)(size.Height * scale));
             if (bitmap != null && w == width && h == height)
@@ -742,7 +749,7 @@ namespace AnikiHelper.Services.Visualizer
 
         private void EnsureBuffers(Size size)
         {
-            var scale = Math.Min(1.0, MaxRenderWidth / Math.Max(1.0, size.Width));
+            var scale = Math.Min(1.0, (Busy ? 900 : MaxRenderWidth) / Math.Max(1.0, size.Width));
             var w = Math.Max(16, (int)(size.Width * scale));
             var h = Math.Max(16, (int)(size.Height * scale));
             if (bitmap != null && w == bufferWidth && h == bufferHeight)
