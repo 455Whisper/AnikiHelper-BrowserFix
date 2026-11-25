@@ -156,6 +156,116 @@ namespace AnikiHelper.Services.Visualizer
         }
 
         private readonly float[] waveHistory = new float[Rings];
+        // Spiral peak sites: a jittered grid of points over the surface. Each follows one part of
+        // the spectrum (40% bass, 35% mids, 25% highs, spread all the way round) and raises a
+        // pointed peak that falls away on every side.
+        private int[] siteSpoke;
+        private int[] siteAge;
+        private double[] siteGain;
+        private double[] siteAmp;
+        private int[] vertexSite;
+        private float[] vertexWeight;
+
+        private void EnsurePeakSites()
+        {
+            if (siteSpoke != null)
+            {
+                return;
+            }
+
+            const double spacing = 1.5;
+            const double reach = 1.3;
+            var random = new Random(11);
+            var xs = new List<double>();
+            var zs = new List<double>();
+            var spokes = new List<int>();
+            var ages = new List<int>();
+            var gains = new List<double>();
+            for (var k = 0; ; k++)
+            {
+                var ringRadius = (k + 0.6) * spacing;
+                if (ringRadius > Radius + 0.5)
+                {
+                    break;
+                }
+
+                var count = Math.Max(1, (int)Math.Round(2 * Math.PI * ringRadius / spacing));
+                var offset = random.NextDouble();
+                for (var j = 0; j < count; j++)
+                {
+                    var a = (j + offset + ((random.NextDouble() - 0.5) * 0.6)) / count * 2 * Math.PI;
+                    var rr = ringRadius + ((random.NextDouble() - 0.5) * 0.7 * spacing);
+                    xs.Add(Math.Cos(a) * rr);
+                    zs.Add(Math.Sin(a) * rr);
+                    var pick = random.NextDouble();
+                    var around = pick < 0.4 ? random.NextDouble() * 0.15
+                        : pick < 0.75 ? 0.15 + (random.NextDouble() * 0.4)
+                        : 0.55 + (random.NextDouble() * 0.45);
+                    var side = random.NextDouble() < 0.5 ? 1 : -1;
+                    spokes.Add((int)(((Spokes / 2.0) + (side * around * Spokes / 2.0) - 0.5 + Spokes) % Spokes));
+                    ages.Add(Math.Max(0, Math.Min(Rings - 1, (int)(rr / Radius * Rings))));
+                    gains.Add(0.7 + (random.NextDouble() * 0.5));
+                }
+            }
+
+            siteSpoke = spokes.ToArray();
+            siteAge = ages.ToArray();
+            siteGain = gains.ToArray();
+            siteAmp = new double[siteSpoke.Length];
+
+            // For every Spiral vertex, remember the 3 closest sites and how strongly each lifts it
+            // ((1 - d/reach)^2: a pointed tip with a soft base).
+            vertexSite = new int[(Rings + 1) * Spokes * 3];
+            vertexWeight = new float[(Rings + 1) * Spokes * 3];
+            for (var r = 0; r <= Rings; r++)
+            {
+                var radius = r / (double)Rings * Radius;
+                for (var s = 0; s < Spokes; s++)
+                {
+                    var angle = s / (double)Spokes * Math.PI * 2;
+                    var vx = Math.Cos(angle) * radius;
+                    var vz = Math.Sin(angle) * radius;
+                    var bestCell = new[] { -1, -1, -1 };
+                    var bestWeight = new[] { 0.0, 0.0, 0.0 };
+                    for (var c = 0; c < siteSpoke.Length; c++)
+                    {
+                        var dx = vx - xs[c];
+                        var dz = vz - zs[c];
+                        var d2 = (dx * dx) + (dz * dz);
+                        if (d2 >= reach * reach)
+                        {
+                            continue;
+                        }
+
+                        var w = 1 - (Math.Sqrt(d2) / reach);
+                        w *= w;
+                        for (var k = 0; k < 3; k++)
+                        {
+                            if (w > bestWeight[k])
+                            {
+                                for (var m = 2; m > k; m--)
+                                {
+                                    bestWeight[m] = bestWeight[m - 1];
+                                    bestCell[m] = bestCell[m - 1];
+                                }
+
+                                bestWeight[k] = w;
+                                bestCell[k] = c;
+                                break;
+                            }
+                        }
+                    }
+
+                    var vi = ((r * Spokes) + s) * 3;
+                    for (var k = 0; k < 3; k++)
+                    {
+                        vertexSite[vi + k] = bestCell[k];
+                        vertexWeight[vi + k] = (float)bestWeight[k];
+                    }
+                }
+            }
+        }
+
         private double colourWash;
         private double colourSpread;
         private double drainSeconds;
@@ -292,6 +402,19 @@ namespace AnikiHelper.Services.Visualizer
                 centre[s] = Math.Max(centre[s], spokeSpectrum[s]);
             }
 
+            if (spiral)
+            {
+                // Each peak site follows its own sound; sites further out hear it a little later,
+                // so hits ripple outward. Soft cap: the loudest reach about 1.25 steps high.
+                EnsurePeakSites();
+                for (var c = 0; c < siteSpoke.Length; c++)
+                {
+                    var level = history[((newest - siteAge[c]) % Rings + Rings) % Rings][siteSpoke[c]];
+                    var amp = Math.Pow(level, 1.2) * 2.0 * (0.5 + (spiralEnergy * 0.8)) * siteGain[c];
+                    siteAmp[c] = 2.13 * (1 - Math.Exp(-amp / 2.13));
+                }
+            }
+
             waveHistory[newest] = rings && Math.Abs(waveNow) > Math.Abs(waveHistory[newest]) ? waveNow : waveHistory[newest];
 
             EnsureBuffers(size);
@@ -344,15 +467,20 @@ namespace AnikiHelper.Services.Visualizer
                         // Peaks stay off the cliff edges: they fade out near the lip and the foot of
                         // each wall, so the step edges stay sharp however loud the music gets.
                         var tread = (1 - riser) * SmoothStep(0.0, 0.25, f) * (1 - SmoothStep(0.7, 0.9, f));
-                        var source = row ?? centre;
-                        // Neighbouring points read neighbouring bands (blurred a little), so peaks
-                        // rise as rounded ridges instead of single stiff spikes.
-                        var i = (s + (r * 2)) % Spokes;
-                        var hit = (source[(i + Spokes - 1) % Spokes] + (2 * source[i]) + source[(i + 1) % Spokes]) / 4;
-                        var spike = Math.Pow(hit, 1.6) * 2.0 * (0.5 + (spiralEnergy * 0.8)) * tread;
+                        // Separate mountain-like peaks: each vertex takes the tallest of the (up to 3)
+                        // nearby peak sites, weighted by how close it is to that site's tip.
+                        var vi = ((r * Spokes) + s) * 3;
+                        var spike = 0.0;
+                        for (var k = 0; k < 3; k++)
+                        {
+                            var cell = vertexSite[vi + k];
+                            if (cell >= 0)
+                            {
+                                spike = Math.Max(spike, vertexWeight[vi + k] * siteAmp[cell]);
+                            }
+                        }
 
-                        // Soft cap: the loudest peaks can reach about 1.25 steps high.
-                        spike = 2.13 * (1 - Math.Exp(-spike / 2.13));
+                        spike *= tread;
                         edgeGlow = Math.Max(Math.Sin(riser * Math.PI), 1 - SmoothStep(0.0, 0.06, f));
                         stairHeight = (((radial * SpiralTurns) - f + riser) * StepHeight) + (texture * (0.4 + spiralEnergy) * (0.3 + (0.7 * tread))) + spike;
                         amplitude = (float)Math.Min(1.0, 0.3 + (0.6 * Math.Sin(riser * Math.PI) * (0.6 + spiralEnergy)) + texture + (0.1 * radial) + (spike * 0.45));
