@@ -325,6 +325,7 @@ namespace AnikiHelper.Services.Visualizer
                     var angle = (s / (double)Spokes * Math.PI * 2) + spin;
                     var amplitude = row == null ? centre[s] : row[s];
                     double stairHeight = 0;
+                    double edgeGlow = 0;
                     if (spiral)
                     {
                         // Endless spiral staircase: a 6-turn helix whose treads slope gently down
@@ -340,14 +341,20 @@ namespace AnikiHelper.Services.Visualizer
                         // Sharp music peaks scattered over the flat top of each step (not on the
                         // walls). Each vertex reads a scrambled band from a different moment in the
                         // recent history, so the peaks flicker across the treads with the music.
-                        var tread = (1 - riser) * SmoothStep(0.0, 0.12, f);
+                        // Peaks stay off the cliff edges: they fade out near the lip and the foot of
+                        // each wall, so the step edges stay sharp however loud the music gets.
+                        var tread = (1 - riser) * SmoothStep(0.0, 0.25, f) * (1 - SmoothStep(0.7, 0.9, f));
                         var source = row ?? centre;
                         // Neighbouring points read neighbouring bands (blurred a little), so peaks
                         // rise as rounded ridges instead of single stiff spikes.
                         var i = (s + (r * 2)) % Spokes;
                         var hit = (source[(i + Spokes - 1) % Spokes] + (2 * source[i]) + source[(i + 1) % Spokes]) / 4;
                         var spike = Math.Pow(hit, 1.6) * 0.85 * (0.5 + (spiralEnergy * 0.8)) * tread;
-                        stairHeight = (((radial * SpiralTurns) - f + riser) * StepHeight) + (texture * (0.4 + spiralEnergy)) + spike;
+
+                        // Soft cap: peaks never grow taller than about half a step.
+                        spike = 0.9 * (1 - Math.Exp(-spike / 0.9));
+                        edgeGlow = Math.Max(Math.Sin(riser * Math.PI), 1 - SmoothStep(0.0, 0.06, f));
+                        stairHeight = (((radial * SpiralTurns) - f + riser) * StepHeight) + (texture * (0.4 + spiralEnergy) * (0.3 + (0.7 * tread))) + spike;
                         amplitude = (float)Math.Min(1.0, 0.3 + (0.6 * Math.Sin(riser * Math.PI) * (0.6 + spiralEnergy)) + texture + (0.1 * radial) + (spike * 0.45));
                     }
 
@@ -394,6 +401,17 @@ namespace AnikiHelper.Services.Visualizer
                             var tint = Hsv(hueBase + (n * 0.45) + (radial * 0.2), 0.8, value);
                             color = Lerp(color, tint, mix * 0.9);
                         }
+                    }
+
+                    // Spiral: the walls and lips glow a little brighter, so the staircase outline
+                    // reads clearly through the colours and peaks.
+                    if (edgeGlow > 0.01)
+                    {
+                        var bright = Color.FromRgb(
+                            (byte)Math.Min(255, (color.R * 1.6) + 60),
+                            (byte)Math.Min(255, (color.G * 1.6) + 60),
+                            (byte)Math.Min(255, (color.B * 1.6) + 60));
+                        color = Lerp(color, bright, edgeGlow * 0.45);
                     }
 
                     pc[index] = (color.R << 16) | (color.G << 8) | color.B;
