@@ -64,11 +64,8 @@ namespace AnikiHelper.Services.Visualizer
         /// </summary>
         private sealed class LowLatencyLoopbackCapture : WasapiCapture
         {
-            public LowLatencyLoopbackCapture()
-                : base(new NAudio.CoreAudioApi.MMDeviceEnumerator().GetDefaultAudioEndpoint(
-                           NAudio.CoreAudioApi.DataFlow.Render, NAudio.CoreAudioApi.Role.Multimedia),
-                       false,
-                       10)
+            public LowLatencyLoopbackCapture(MMDevice device)
+                : base(device, false, 10)
             {
             }
 
@@ -85,6 +82,77 @@ namespace AnikiHelper.Services.Visualizer
         private static extern uint timeEndPeriod(uint period);
 
         private bool timerRaised;
+
+        // Windows applies the output volume before loopback capture hears the sound, so a lower
+        // volume would make the visualizer move less. Undo it: boost the captured audio by
+        // exactly what the volume took away, so the motion looks the same at any volume.
+        private MMDevice captureDevice;
+        private AudioEndpointVolume captureVolume;
+        private AudioEndpointVolumeNotificationDelegate volumeHandler;
+        private volatile float inputGain = 1f;
+
+        private void TrackVolume(MMDevice device)
+        {
+            try
+            {
+                captureVolume = device.AudioEndpointVolume;
+                UpdateGain();
+                volumeHandler = data => UpdateGain();
+                captureVolume.OnVolumeNotification += volumeHandler;
+                logger?.Info($"[AnikiHelper][Visualizer] Volume compensation gain {inputGain:0.00}x.");
+            }
+            catch (Exception ex)
+            {
+                inputGain = 1f;
+                logger?.Warn(ex, "[AnikiHelper][Visualizer] Could not read the output volume.");
+            }
+        }
+
+        private void UpdateGain()
+        {
+            try
+            {
+                var volume = captureVolume;
+                if (volume == null)
+                {
+                    return;
+                }
+
+                // Volume in dB (0 at max, negative below). Cap the boost at 54 dB so a near-zero
+                // volume doesn't blow up noise.
+                var db = Math.Max(-54.0, Math.Min(0.0, volume.MasterVolumeLevel));
+                inputGain = (float)Math.Pow(10, -db / 20);
+            }
+            catch
+            {
+            }
+        }
+
+        private void UntrackVolume()
+        {
+            try
+            {
+                if (captureVolume != null && volumeHandler != null)
+                {
+                    captureVolume.OnVolumeNotification -= volumeHandler;
+                }
+            }
+            catch
+            {
+            }
+
+            captureVolume = null;
+            volumeHandler = null;
+            try
+            {
+                captureDevice?.Dispose();
+            }
+            catch
+            {
+            }
+
+            captureDevice = null;
+        }
 
         // Time-domain bass: a 150 Hz low-pass filter, then loudness over the last ~5 ms.
         // This reacts almost instantly, unlike an FFT which always looks back over its window.
@@ -216,7 +284,9 @@ namespace AnikiHelper.Services.Visualizer
         {
             try
             {
-                capture = new LowLatencyLoopbackCapture();
+                captureDevice = new MMDeviceEnumerator().GetDefaultAudioEndpoint(DataFlow.Render, Role.Multimedia);
+                TrackVolume(captureDevice);
+                capture = new LowLatencyLoopbackCapture(captureDevice);
                 sampleRate = capture.WaveFormat.SampleRate;
                 SetupBassFilter(150, sampleRate);
                 capture.DataAvailable += OnDataAvailable;
@@ -236,6 +306,7 @@ namespace AnikiHelper.Services.Visualizer
             {
                 logger?.Warn(ex, "[AnikiHelper][Visualizer] Could not listen to the PC's audio.");
                 capture = null;
+                UntrackVolume();
             }
         }
 
@@ -291,6 +362,7 @@ namespace AnikiHelper.Services.Visualizer
         {
             var current = capture;
             capture = null;
+            UntrackVolume();
             if (current == null)
             {
                 return;
@@ -342,7 +414,7 @@ namespace AnikiHelper.Services.Visualizer
                     }
                 }
 
-                var sample = mono / channels;
+                var sample = mono / channels * inputGain;
                 ring[ringPosition] = sample;
                 ringPosition = (ringPosition + 1) % FftLength;
                 samplesSinceFft++;
