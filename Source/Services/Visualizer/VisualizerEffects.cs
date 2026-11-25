@@ -73,7 +73,10 @@ namespace AnikiHelper.Services.Visualizer
     /// </summary>
     internal sealed class RippleEffect : VisualEffect
     {
-        private const int Rings = 84;
+        // Storage for up to 120 rings; Rings and Burst draw 84, Spiral draws all 120 so its
+        // step walls can be steep without turning jagged.
+        private const int Rings = 120;
+        private int ActiveRings => Style == 2 ? Rings : 84;
         private const int Spokes = 160;
         private const double Radius = 15.0;
         private const double DomeHeight = 2.2;
@@ -305,10 +308,11 @@ namespace AnikiHelper.Services.Visualizer
             var lift = audio.Beat * 0.25;
 
             // Vertices: ring 0 is the centre point (repeated per spoke so indexing stays simple).
-            for (var r = 0; r <= Rings; r++)
+            var ringCount = ActiveRings;
+            for (var r = 0; r <= ringCount; r++)
             {
                 // Each ring drifts outward smoothly between steps.
-                var radial = spiral ? r / (double)Rings : r == 0 ? 0 : Math.Min(1.0, (r + step) / (Rings + 1));
+                var radial = spiral ? r / (double)ringCount : r == 0 ? 0 : Math.Min(1.0, (r + step) / (ringCount + 1));
 
                 var radius = radial * Radius;
                 var dome = DomeHeight * (1 - (radial * radial));
@@ -330,7 +334,7 @@ namespace AnikiHelper.Services.Visualizer
                         var baseAngle = s / (double)Spokes;
                         var u = (radial * SpiralTurns) - baseAngle + spiralPhase;
                         var f = u - Math.Floor(u);
-                        var riser = SmoothStep(0.8, 1.0, f);
+                        var riser = SmoothStep(0.92, 1.0, f);
                         var texture = spokeSpectrum[(s + (r * 7)) % Spokes] * 0.25;
 
                         // Sharp music peaks scattered over the flat top of each step (not on the
@@ -401,7 +405,7 @@ namespace AnikiHelper.Services.Visualizer
             Array.Clear(blue, 0, blue.Length);
 
             // Triangulated wireframe: rings, spokes and one diagonal per cell.
-            for (var r = 0; r <= Rings; r++)
+            for (var r = 0; r <= ringCount; r++)
             {
                 for (var s = 0; s < Spokes; s++)
                 {
@@ -412,7 +416,7 @@ namespace AnikiHelper.Services.Visualizer
                         Line(a, next, 150);
                     }
 
-                    if (r < Rings)
+                    if (r < ringCount)
                     {
                         var outward = ((r + 1) * Spokes) + s;
                         var diagonal = ((r + 1) * Spokes) + ((s + 1) % Spokes);
