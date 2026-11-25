@@ -206,7 +206,8 @@ namespace AnikiHelper.Services.Visualizer
             {
                 var energy = (audio.Bass * 0.55) + (audio.Mid * 0.3) + (audio.Onset * 0.3);
                 spiralEnergy = energy > spiralEnergy ? energy : spiralEnergy + ((energy - spiralEnergy) * (1 - Math.Exp(-4 * delta)));
-                spiralPhase += delta * (0.25 + (spiralEnergy * 1.1));
+                // Slow, steady turn (a quarter of the old speed) that surges a bit more with loud music.
+                spiralPhase += delta * (0.07 + (spiralEnergy * spiralEnergy * 0.38));
             }
             while (step >= 1)
             {
@@ -265,8 +266,16 @@ namespace AnikiHelper.Services.Visualizer
                         var f = u - Math.Floor(u);
                         var riser = SmoothStep(0.8, 1.0, f);
                         var texture = spokeSpectrum[(s + (r * 7)) % Spokes] * 0.25;
-                        stairHeight = (((radial * SpiralTurns) - f + riser) * StepHeight) + (texture * (0.4 + spiralEnergy));
-                        amplitude = (float)Math.Min(1.0, 0.3 + (0.6 * Math.Sin(riser * Math.PI) * (0.6 + spiralEnergy)) + texture + (0.1 * radial));
+
+                        // Sharp music peaks scattered over the flat top of each step (not on the
+                        // walls). Each vertex reads a scrambled band from a different moment in the
+                        // recent history, so the peaks flicker across the treads with the music.
+                        var tread = (1 - riser) * SmoothStep(0.0, 0.12, f);
+                        var source = row ?? centre;
+                        var hit = source[((s * 13) + (r * 7)) % Spokes];
+                        var spike = Math.Pow(hit, 1.8) * 1.9 * (0.55 + spiralEnergy) * tread;
+                        stairHeight = (((radial * SpiralTurns) - f + riser) * StepHeight) + (texture * (0.4 + spiralEnergy)) + spike;
+                        amplitude = (float)Math.Min(1.0, 0.3 + (0.6 * Math.Sin(riser * Math.PI) * (0.6 + spiralEnergy)) + texture + (0.1 * radial) + (spike * 0.45));
                     }
 
                     var peak = spiral
