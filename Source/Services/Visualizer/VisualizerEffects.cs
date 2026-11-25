@@ -64,8 +64,8 @@ namespace AnikiHelper.Services.Visualizer
     /// </summary>
     internal sealed class RippleEffect : VisualEffect
     {
-        private const int Rings = 56;
-        private const int Spokes = 144;
+        private const int Rings = 84;
+        private const int Spokes = 160;
         private const double Radius = 15.0;
         private const double DomeHeight = 2.2;
         private const double PeakScale = 2.4;
@@ -121,13 +121,19 @@ namespace AnikiHelper.Services.Visualizer
 
         public override int StyleCount
         {
-            get { return 2; }
+            get { return 3; }
         }
 
         public override string StyleName
         {
-            get { return Style == 0 ? "Rings" : "Burst"; }
+            get { return Style == 0 ? "Rings" : Style == 1 ? "Burst" : "Spiral"; }
         }
+
+        private static readonly Color SpiralLow = Color.FromRgb(0x62, 0x94, 0xCC);
+        private static readonly Color SpiralMid = Color.FromRgb(0xA4, 0xEE, 0xFF);
+        private static readonly Color SpiralHigh = Color.FromRgb(0xF6, 0xFF, 0xDC);
+        private double spiralPhase;
+        private double spiralEnergy;
 
         private double wavePhase;
         private double waveEnvelope;
@@ -169,7 +175,16 @@ namespace AnikiHelper.Services.Visualizer
             }
 
             // Rings travel outward a little slower than bursts, like water.
-            step += delta / FramePeriod * (rings ? 0.7 : 1.0);
+            step += delta / FramePeriod * (rings ? 0.7 : 1.0) * 1.5;
+
+            // Spiral: terraced spiral steps that turn and flow outward faster with louder music.
+            var spiral = Style == 2;
+            if (spiral)
+            {
+                var energy = (audio.Bass * 0.55) + (audio.Mid * 0.3) + (audio.Onset * 0.3);
+                spiralEnergy = energy > spiralEnergy ? energy : spiralEnergy + ((energy - spiralEnergy) * (1 - Math.Exp(-4 * delta)));
+                spiralPhase += delta * (0.7 + (spiralEnergy * 3.2));
+            }
             while (step >= 1)
             {
                 step -= 1;
@@ -197,7 +212,7 @@ namespace AnikiHelper.Services.Visualizer
             for (var r = 0; r <= Rings; r++)
             {
                 // Each ring drifts outward smoothly between steps.
-                var radial = r == 0 ? 0 : Math.Min(1.0, (r + step) / (Rings + 1));
+                var radial = spiral ? r / (double)Rings : r == 0 ? 0 : Math.Min(1.0, (r + step) / (Rings + 1));
 
                 var radius = radial * Radius;
                 var dome = DomeHeight * (1 - (radial * radial));
@@ -207,7 +222,20 @@ namespace AnikiHelper.Services.Visualizer
                 {
                     var angle = (s / (double)Spokes * Math.PI * 2) + spin;
                     var amplitude = row == null ? centre[s] : row[s];
-                    var peak = Style == 0
+                    if (spiral)
+                    {
+                        // Distance along a 5-turn spiral; tanh squares the wave into flat steps
+                        // with steep walls, and the spectrum adds a fine rough texture on top.
+                        var baseAngle = s / (double)Spokes * Math.PI * 2;
+                        var arg = (radial * 5 * Math.PI * 2) - baseAngle - (spiralPhase * Math.PI * 2);
+                        var terrace = 0.5 + (0.5 * Math.Tanh(5 * Math.Sin(arg)));
+                        var texture = spokeSpectrum[(s + (r * 7)) % Spokes] * 0.22;
+                        amplitude = (float)Math.Min(1.0, (terrace * (0.55 + (spiralEnergy * 0.6))) + texture);
+                    }
+
+                    var peak = spiral
+                        ? amplitude * (1.2 + (spiralEnergy * 1.4)) * fade
+                        : Style == 0
                         ? amplitude * 2.6 * fade
                         : Math.Pow(amplitude, 1.35) * PeakScale * fade * (r == 0 ? 0.6 : 1);
                     amplitude = Math.Abs(amplitude);
@@ -225,7 +253,9 @@ namespace AnikiHelper.Services.Visualizer
 
                     // Colour: taller and closer to the centre is greener.
                     var heat = Math.Min(1.0, (amplitude * fade * 0.55) + ((1 - radial) * (1 - radial) * 0.55));
-                    var color = heat < 0.5 ? Lerp(Rim, Mid, heat * 2) : Lerp(Mid, Peak, (heat - 0.5) * 2);
+                    var color = spiral
+                        ? (amplitude < 0.5 ? Lerp(SpiralLow, SpiralMid, amplitude * 2) : Lerp(SpiralMid, SpiralHigh, (amplitude - 0.5) * 2))
+                        : heat < 0.5 ? Lerp(Rim, Mid, heat * 2) : Lerp(Mid, Peak, (heat - 0.5) * 2);
                     pc[index] = (color.R << 16) | (color.G << 8) | color.B;
                 }
             }
@@ -289,7 +319,8 @@ namespace AnikiHelper.Services.Visualizer
 
         private void EnsureBuffers(Size size)
         {
-            var scale = Math.Min(1.0, MaxRenderWidth / Math.Max(1.0, size.Width));
+            // Spiral renders at full resolution so its fine walls stay crisp.
+            var scale = Math.Min(1.0, (Style == 2 ? 1920 : MaxRenderWidth) / Math.Max(1.0, size.Width));
             var w = Math.Max(16, (int)(size.Width * scale));
             var h = Math.Max(16, (int)(size.Height * scale));
             if (bitmap != null && w == width && h == height)
