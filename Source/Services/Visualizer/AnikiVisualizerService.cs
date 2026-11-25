@@ -49,6 +49,7 @@ namespace AnikiHelper.Services.Visualizer
         private readonly List<VisualEffect> effects = new List<VisualEffect>
         {
             new MeshGridEffect(),
+            new RippleEffect(),
             new DotGridEffect(),
             new ParticleEffect()
         };
@@ -351,10 +352,46 @@ namespace AnikiHelper.Services.Visualizer
             CompositionTarget.Rendering -= OnRendering;
         }
 
+        private TimeSpan lastRenderingTime;
+        private readonly List<double> refreshSamples = new List<double>();
+
         private void OnRendering(object sender, EventArgs e)
         {
+            // Time each frame by the display's own vsync timestamps, and skip the duplicate
+            // Rendering calls WPF sometimes makes within one frame. Motion then advances exactly
+            // one refresh (e.g. 1/59.94 s) per frame on the TV, with no judder.
+            var args = e as RenderingEventArgs;
+            double delta;
             var now = clock.Elapsed.TotalSeconds;
-            var delta = Math.Max(0.001, Math.Min(0.1, now - lastFrameSeconds));
+            if (args != null)
+            {
+                if (args.RenderingTime == lastRenderingTime)
+                {
+                    return;
+                }
+
+                delta = (args.RenderingTime - lastRenderingTime).TotalSeconds;
+                lastRenderingTime = args.RenderingTime;
+                if (delta > 0.004 && delta < 0.05 && refreshSamples.Count < 240)
+                {
+                    refreshSamples.Add(delta);
+                    if (refreshSamples.Count % 30 == 0)
+                    {
+                        var sorted = refreshSamples.OrderBy(v => v).ToList();
+                        VisualEffect.FramePeriod = sorted[sorted.Count / 2];
+                    }
+                }
+
+                // Snap to whole refreshes so a late frame doesn't make motion stutter.
+                var period = VisualEffect.FramePeriod;
+                delta = Math.Max(1, Math.Round(delta / period)) * period;
+            }
+            else
+            {
+                delta = now - lastFrameSeconds;
+            }
+
+            delta = Math.Max(0.001, Math.Min(0.1, delta));
             lastFrameSeconds = now;
 
             analyzer.Sample(audio, delta);

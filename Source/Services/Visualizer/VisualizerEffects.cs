@@ -11,6 +11,9 @@ namespace AnikiHelper.Services.Visualizer
     {
         public abstract string Name { get; }
 
+        /// <summary>The display's measured refresh period (e.g. 1/59.94 s), set by the host.</summary>
+        public static double FramePeriod = 1.0 / 60;
+
         public abstract void Render(DrawingContext dc, Size size, AudioFrame audio, double time, double delta);
 
         protected static Color Lerp(Color a, Color b, double t)
@@ -40,17 +43,417 @@ namespace AnikiHelper.Services.Visualizer
     /// A wireframe landscape seen in perspective. Each row is a past moment of the music,
     /// so peaks roll toward the horizon; bass lifts the middle, treble the edges.
     /// </summary>
+    /// <summary>
+    /// "Ripple": a domed disc of triangulated wireframe seen from above. Sound enters at the
+    /// centre and travels outward ring by ring, raising 3D peaks; colour runs from purple at the
+    /// rim through cyan to green-yellow on the tallest peaks. Software-rendered like the mesh.
+    /// </summary>
+    internal sealed class RippleEffect : VisualEffect
+    {
+        private const int Rings = 56;
+        private const int Spokes = 144;
+        private const double Radius = 15.0;
+        private const double DomeHeight = 3.2;
+        private const double PeakScale = 2.4;
+        private const double CameraHeight = 12.5;
+        private const double CameraBack = 13.0;
+        private const double PitchDegrees = 44;
+        private const int MaxRenderWidth = 1280;
+
+        private static readonly Color Rim = Color.FromRgb(0x6C, 0x4A, 0xFF);
+        private static readonly Color Mid = Color.FromRgb(0x3A, 0xE0, 0xF0);
+        private static readonly Color Peak = Color.FromRgb(0xC6, 0xFF, 0x3A);
+
+        private readonly float[][] history = new float[Rings][];
+        private readonly float[] spokeSpectrum = new float[Spokes];
+        private readonly float[] px = new float[(Rings + 1) * Spokes];
+        private readonly float[] py = new float[(Rings + 1) * Spokes];
+        private readonly int[] pc = new int[(Rings + 1) * Spokes];
+        private readonly Point[] stars;
+        private int newest;
+        private double step;
+
+        private int width;
+        private int height;
+        private int[] red;
+        private int[] green;
+        private int[] blue;
+        private int[] glowR;
+        private int[] glowG;
+        private int[] glowB;
+        private int[] temp;
+        private int[] pixels;
+        private WriteableBitmap bitmap;
+
+        public RippleEffect()
+        {
+            for (var r = 0; r < Rings; r++)
+            {
+                history[r] = new float[Spokes];
+            }
+
+            var random = new Random(11);
+            stars = new Point[90];
+            for (var i = 0; i < stars.Length; i++)
+            {
+                stars[i] = new Point(random.NextDouble(), random.NextDouble() * 0.35);
+            }
+        }
+
+        public override string Name
+        {
+            get { return "Ripple"; }
+        }
+
+        private float[] RingAt(int age)
+        {
+            return history[((newest - age) % Rings + Rings) % Rings];
+        }
+
+        public override void Render(DrawingContext dc, Size size, AudioFrame audio, double time, double delta)
+        {
+            // Spectrum around the circle, mirrored left/right, with a little extra detail.
+            var half = Spokes / 2.0;
+            for (var s = 0; s < Spokes; s++)
+            {
+                var around = Math.Abs(((s + 0.5) - half) / half);
+                var position = around * (AudioFrame.BandCount - 2);
+                var i = (int)position;
+                var t = (float)(position - i);
+                var value = (audio.Bands[i] * (1 - t)) + (audio.Bands[i + 1] * t);
+                var detail = audio.Bands[30 + ((s * 29) % (AudioFrame.BandCount - 34))];
+                spokeSpectrum[s] = (float)((1 - Math.Exp(-2.3 * ((value * 0.75f) + (detail * 0.25f)))) / 0.9);
+            }
+
+            // One ring outward per display frame.
+            step += delta / FramePeriod;
+            while (step >= 1)
+            {
+                step -= 1;
+                newest = (newest + 1) % Rings;
+                Array.Copy(spokeSpectrum, history[newest], Spokes);
+            }
+
+            var centre = history[newest];
+            for (var s = 0; s < Spokes; s++)
+            {
+                centre[s] = Math.Max(centre[s], spokeSpectrum[s]);
+            }
+
+            EnsureBuffers(size);
+            var focal = height * 0.95;
+            var centreX = width / 2.0;
+            var centreY = height * 0.34;
+            var pitch = PitchDegrees * Math.PI / 180;
+            var cosPitch = Math.Cos(pitch);
+            var sinPitch = Math.Sin(pitch);
+            var spin = time * 0.05;
+            var lift = audio.Beat * 0.25;
+
+            // Vertices: ring 0 is the centre point (repeated per spoke so indexing stays simple).
+            for (var r = 0; r <= Rings; r++)
+            {
+                // Each ring drifts outward smoothly between steps.
+                var radial = r == 0 ? 0 : Math.Min(1.0, (r + step) / (Rings + 1));
+
+                var radius = radial * Radius;
+                var dome = DomeHeight * (1 - (radial * radial));
+                var row = r == 0 ? null : RingAt(r - 1);
+                var fade = 1.0 - (radial * 0.55);
+                for (var s = 0; s < Spokes; s++)
+                {
+                    var angle = (s / (double)Spokes * Math.PI * 2) + spin;
+                    var amplitude = row == null ? centre[s] : row[s];
+                    var peak = Math.Pow(amplitude, 1.35) * PeakScale * fade * (r == 0 ? 0.6 : 1);
+                    var x = Math.Cos(angle) * radius;
+                    var z = Math.Sin(angle) * radius;
+                    var y = dome + peak + lift;
+
+                    var dy = y - CameraHeight;
+                    var dz = z + CameraBack;
+                    var y2 = (dy * cosPitch) + (dz * sinPitch);
+                    var z2 = Math.Max(0.5, (-dy * sinPitch) + (dz * cosPitch));
+                    var index = (r * Spokes) + s;
+                    px[index] = (float)(centreX + (x * focal / z2));
+                    py[index] = (float)(centreY - (y2 * focal / z2));
+
+                    // Colour: taller and closer to the centre is greener.
+                    var heat = Math.Min(1.0, (amplitude * 0.75) + ((1 - radial) * 0.35));
+                    var color = heat < 0.5 ? Lerp(Rim, Mid, heat * 2) : Lerp(Mid, Peak, (heat - 0.5) * 2);
+                    pc[index] = (color.R << 16) | (color.G << 8) | color.B;
+                }
+            }
+
+            Array.Clear(red, 0, red.Length);
+            Array.Clear(green, 0, green.Length);
+            Array.Clear(blue, 0, blue.Length);
+
+            // Triangulated wireframe: rings, spokes and one diagonal per cell.
+            for (var r = 0; r <= Rings; r++)
+            {
+                for (var s = 0; s < Spokes; s++)
+                {
+                    var a = (r * Spokes) + s;
+                    var next = (r * Spokes) + ((s + 1) % Spokes);
+                    if (r > 0)
+                    {
+                        Line(a, next, 150);
+                    }
+
+                    if (r < Rings)
+                    {
+                        var outward = ((r + 1) * Spokes) + s;
+                        var diagonal = ((r + 1) * Spokes) + ((s + 1) % Spokes);
+                        Line(a, outward, 150);
+                        Line(a, diagonal, 90);
+                    }
+                }
+            }
+
+            // A few stars above the horizon.
+            for (var i = 0; i < stars.Length; i++)
+            {
+                var sx = (int)(stars[i].X * (width - 1));
+                var sy = (int)(stars[i].Y * (height - 1));
+                var twinkle = (int)(120 + (80 * Math.Sin((time * 1.3) + (i * 1.7))));
+                var p = (sy * width) + sx;
+                red[p] += twinkle;
+                green[p] += twinkle;
+                blue[p] += twinkle;
+            }
+
+            Glow(red, glowR);
+            Glow(green, glowG);
+            Glow(blue, glowB);
+            Compose();
+
+            bitmap.WritePixels(new Int32Rect(0, 0, width, height), pixels, width * 4, 0);
+            dc.DrawImage(bitmap, new Rect(0, 0, size.Width, size.Height));
+        }
+
+        private void Line(int a, int b, int strength)
+        {
+            var ca = pc[a];
+            var cb = pc[b];
+            var r = ((((ca >> 16) & 0xFF) + ((cb >> 16) & 0xFF)) * strength) >> 9;
+            var g = ((((ca >> 8) & 0xFF) + ((cb >> 8) & 0xFF)) * strength) >> 9;
+            var bl = (((ca & 0xFF) + (cb & 0xFF)) * strength) >> 9;
+            DrawLine(px[a], py[a], px[b], py[b], r, g, bl);
+        }
+
+        private void EnsureBuffers(Size size)
+        {
+            var scale = Math.Min(1.0, MaxRenderWidth / Math.Max(1.0, size.Width));
+            var w = Math.Max(16, (int)(size.Width * scale));
+            var h = Math.Max(16, (int)(size.Height * scale));
+            if (bitmap != null && w == width && h == height)
+            {
+                return;
+            }
+
+            width = w;
+            height = h;
+            red = new int[w * h];
+            green = new int[w * h];
+            blue = new int[w * h];
+            pixels = new int[w * h];
+            var glowSize = (w / 2) * (h / 2);
+            glowR = new int[glowSize];
+            glowG = new int[glowSize];
+            glowB = new int[glowSize];
+            temp = new int[glowSize];
+            bitmap = new WriteableBitmap(w, h, 96, 96, PixelFormats.Pbgra32, null);
+        }
+
+        // Xiaolin Wu anti-aliased line, additive into the three colour buffers.
+        private void DrawLine(float x0, float y0, float x1, float y1, int cr, int cg, int cb)
+        {
+            var w = width;
+            var h = height;
+            if ((x0 < 0 && x1 < 0) || (y0 < 0 && y1 < 0) || (x0 >= w && x1 >= w) || (y0 >= h && y1 >= h))
+            {
+                return;
+            }
+
+            var dx = x1 - x0;
+            var dy = y1 - y0;
+            if (Math.Abs(dx) > w * 2 || Math.Abs(dy) > h * 2)
+            {
+                return;
+            }
+
+            if (Math.Abs(dx) >= Math.Abs(dy))
+            {
+                if (x1 < x0)
+                {
+                    var tx = x0; x0 = x1; x1 = tx;
+                    var ty = y0; y0 = y1; y1 = ty;
+                }
+
+                var gradient = Math.Abs(dx) < 0.0001f ? 0 : (y1 - y0) / (x1 - x0);
+                var start = Math.Max(0, (int)Math.Ceiling(x0));
+                var end = Math.Min(w - 1, (int)Math.Floor(x1));
+                var yy = y0 + (gradient * (start - x0));
+                for (var x = start; x <= end; x++, yy += gradient)
+                {
+                    var iy = (int)Math.Floor(yy);
+                    var f = yy - iy;
+                    Plot(x, iy, 1 - f, cr, cg, cb);
+                    Plot(x, iy + 1, f, cr, cg, cb);
+                }
+            }
+            else
+            {
+                if (y1 < y0)
+                {
+                    var tx = x0; x0 = x1; x1 = tx;
+                    var ty = y0; y0 = y1; y1 = ty;
+                }
+
+                var gradient = (x1 - x0) / (y1 - y0);
+                var start = Math.Max(0, (int)Math.Ceiling(y0));
+                var end = Math.Min(h - 1, (int)Math.Floor(y1));
+                var xx = x0 + (gradient * (start - y0));
+                for (var y = start; y <= end; y++, xx += gradient)
+                {
+                    var ix = (int)Math.Floor(xx);
+                    var f = xx - ix;
+                    Plot(ix, y, 1 - f, cr, cg, cb);
+                    Plot(ix + 1, y, f, cr, cg, cb);
+                }
+            }
+        }
+
+        private void Plot(int x, int y, float coverage, int cr, int cg, int cb)
+        {
+            if (x < 0 || y < 0 || x >= width || y >= height)
+            {
+                return;
+            }
+
+            var p = (y * width) + x;
+            red[p] += (int)(cr * coverage);
+            green[p] += (int)(cg * coverage);
+            blue[p] += (int)(cb * coverage);
+        }
+
+        private void Glow(int[] source, int[] glow)
+        {
+            var w = width;
+            var gw = width / 2;
+            var gh = height / 2;
+            Parallel.For(0, gh, gy =>
+            {
+                var s = gy * 2 * w;
+                var target = gy * gw;
+                for (var gx = 0; gx < gw; gx++)
+                {
+                    var i = s + (gx * 2);
+                    glow[target + gx] = (Math.Min(255, source[i]) + Math.Min(255, source[i + 1]) +
+                                         Math.Min(255, source[i + w]) + Math.Min(255, source[i + w + 1])) >> 2;
+                }
+            });
+
+            Blur(glow, temp, gw, gh, true);
+            Blur(temp, glow, gw, gh, false);
+            Blur(glow, temp, gw, gh, true);
+            Blur(temp, glow, gw, gh, false);
+        }
+
+        private static void Blur(int[] source, int[] target, int gw, int gh, bool horizontal)
+        {
+            const int radius = 4;
+            const int span = (radius * 2) + 1;
+            if (horizontal)
+            {
+                Parallel.For(0, gh, y =>
+                {
+                    var row = y * gw;
+                    var sum = 0;
+                    for (var x = -radius; x <= radius; x++)
+                    {
+                        sum += source[row + Math.Max(0, Math.Min(gw - 1, x))];
+                    }
+
+                    for (var x = 0; x < gw; x++)
+                    {
+                        target[row + x] = sum / span;
+                        sum += source[row + Math.Min(gw - 1, x + radius + 1)] - source[row + Math.Max(0, x - radius)];
+                    }
+                });
+            }
+            else
+            {
+                Parallel.For(0, gw, x =>
+                {
+                    var sum = 0;
+                    for (var y = -radius; y <= radius; y++)
+                    {
+                        sum += source[(Math.Max(0, Math.Min(gh - 1, y)) * gw) + x];
+                    }
+
+                    for (var y = 0; y < gh; y++)
+                    {
+                        target[(y * gw) + x] = sum / span;
+                        sum += source[(Math.Min(gh - 1, y + radius + 1) * gw) + x] - source[(Math.Max(0, y - radius) * gw) + x];
+                    }
+                });
+            }
+        }
+
+        private void Compose()
+        {
+            var w = width;
+            var gw = width / 2;
+            var gh = height / 2;
+            Parallel.For(0, height, y =>
+            {
+                var row = y * w;
+                var glowRow = Math.Min(gh - 1, y >> 1) * gw;
+                for (var x = 0; x < w; x++)
+                {
+                    var g = glowRow + Math.Min(gw - 1, x >> 1);
+                    var r = Math.Min(255, red[row + x] + ((glowR[g] * 3) >> 1));
+                    var gr = Math.Min(255, green[row + x] + ((glowG[g] * 3) >> 1));
+                    var b = Math.Min(255, blue[row + x] + ((glowB[g] * 3) >> 1));
+                    var a = Math.Max(r, Math.Max(gr, b));
+                    pixels[row + x] = a == 0 ? 0 : (a << 24) | (r << 16) | (gr << 8) | b;
+                }
+            });
+        }
+    }
+
     internal sealed class MeshGridEffect : VisualEffect
     {
         private const int Columns = 161;
-        private const int Rows = 70;
-        private const double RowSpacing = 0.42;
+        private const int Rows = 110;
+        private const double RowSpacing = 0.27;
         private const double NearDistance = 2.2;
-        private const double Spread = 26.0;
+        private const double Spread = 32.0;
+        private const double BowlRise = 3.5;
+        private const double SideLift = 1.6;
         private const double CameraHeight = 6.0;
         private const double PitchDegrees = 34;
         private const double SwayDegrees = 5;
-        private const double StepSeconds = 1.0 / 40;
+        // One new row per display frame: the surface scrolls in step with the TV's refresh.
+        private static double StepSeconds
+        {
+            get { return FramePeriod; }
+        }
+
+        private static readonly float[] ColumnJitter = BuildJitter(161);
+
+        private static float[] BuildJitter(int count)
+        {
+            var random = new Random(7);
+            var values = new float[count];
+            for (var i = 0; i < count; i++)
+            {
+                values[i] = 0.82f + (float)(random.NextDouble() * 0.36);
+            }
+
+            return values;
+        }
         private const double HeightScale = 2.6;
         private const int MaxRenderWidth = 1280;
 
@@ -107,7 +510,19 @@ namespace AnikiHelper.Services.Visualizer
                 var position = Math.Pow(fromCentre, 0.85) * maxBand;
                 var i = (int)position;
                 var t = (float)(position - i);
-                spectrum[c] = (audio.Bands[i] * (1 - t)) + (audio.Bands[i + 1] * t);
+                var smooth = (audio.Bands[i] * (1 - t)) + (audio.Bands[i + 1] * t);
+
+                // Detail: each line also follows its own higher band (mirrored so both halves
+                // match), which breaks up the broad flat hills the bass makes in the centre.
+                var mirror = (int)Math.Abs(c - half);
+                var detailBand = 36 + ((mirror * 37) % (AudioFrame.BandCount - 40));
+                var detail = audio.Bands[detailBand];
+                var centreWeight = 1.0f - (float)Math.Min(1.0, fromCentre * 2.5);
+                var mixed = (smooth * (0.78f - (0.18f * centreWeight))) + (detail * (0.22f + (0.18f * centreWeight)));
+
+                // Soft ceiling so loud bass rounds off into peaks instead of flat plateaus.
+                var shaped = (float)(1 - Math.Exp(-2.4 * mixed)) / 0.909f;
+                spectrum[c] = Math.Min(1.1f, shaped * ColumnJitter[mirror % ColumnJitter.Length]);
             }
         }
 
@@ -147,14 +562,19 @@ namespace AnikiHelper.Services.Visualizer
 
             for (var r = 0; r < Rows; r++)
             {
-                var z = NearDistance + ((r - scroll) * RowSpacing);
+                var z = NearDistance + ((r + scroll) * RowSpacing);
                 var row = r < filled ? RowAt(r) : null;
                 var distanceFade = 1.0 - (r / (double)Rows * 0.25);
+                var depth = Math.Max(0, (z - NearDistance) / (Rows * RowSpacing));
+                var bowl = BowlRise * depth * depth;
                 for (var c = 0; c < Columns; c++)
                 {
-                    var x = ((c / (double)(Columns - 1)) * 2 - 1) * Spread;
+                    var across = (c / (double)(Columns - 1)) * 2 - 1;
+                    var x = across * Spread;
                     var amplitude = row == null ? 0 : row[c];
-                    var y = Math.Pow(amplitude, 1.5) * HeightScale * distanceFade;
+
+                    // Concave surface: it curves up toward the back and a little at the sides.
+                    var y = (Math.Pow(amplitude, 1.5) * HeightScale * distanceFade) + bowl + (SideLift * across * across);
 
                     var dy = y - cameraHeight;
                     var x1 = (x * cosYaw) - (z * sinYaw);
@@ -180,7 +600,7 @@ namespace AnikiHelper.Services.Visualizer
                 }
             }
 
-            for (var r = 0; r < Rows; r += 3)
+            for (var r = 0; r < Rows; r += 4)
             {
                 for (var c = 0; c < Columns - 1; c++)
                 {
