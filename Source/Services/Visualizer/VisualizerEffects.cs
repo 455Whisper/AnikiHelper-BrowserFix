@@ -53,11 +53,11 @@ namespace AnikiHelper.Services.Visualizer
         private const int Rings = 56;
         private const int Spokes = 144;
         private const double Radius = 15.0;
-        private const double DomeHeight = 3.2;
+        private const double DomeHeight = 2.2;
         private const double PeakScale = 2.4;
-        private const double CameraHeight = 12.5;
-        private const double CameraBack = 13.0;
-        private const double PitchDegrees = 44;
+        private const double CameraHeight = 11.0;
+        private const double CameraBack = 14.0;
+        private const double PitchDegrees = 38;
         private const int MaxRenderWidth = 1280;
 
         private static readonly Color Rim = Color.FromRgb(0x6C, 0x4A, 0xFF);
@@ -96,7 +96,7 @@ namespace AnikiHelper.Services.Visualizer
             stars = new Point[90];
             for (var i = 0; i < stars.Length; i++)
             {
-                stars[i] = new Point(random.NextDouble(), random.NextDouble() * 0.35);
+                stars[i] = new Point(random.NextDouble(), random.NextDouble() * 0.3);
             }
         }
 
@@ -141,9 +141,9 @@ namespace AnikiHelper.Services.Visualizer
             }
 
             EnsureBuffers(size);
-            var focal = height * 0.95;
+            var focal = height * 1.2;
             var centreX = width / 2.0;
-            var centreY = height * 0.34;
+            var centreY = height * 0.43;
             var pitch = PitchDegrees * Math.PI / 180;
             var cosPitch = Math.Cos(pitch);
             var sinPitch = Math.Sin(pitch);
@@ -167,7 +167,7 @@ namespace AnikiHelper.Services.Visualizer
                     var peak = Math.Pow(amplitude, 1.35) * PeakScale * fade * (r == 0 ? 0.6 : 1);
                     var x = Math.Cos(angle) * radius;
                     var z = Math.Sin(angle) * radius;
-                    var y = dome + peak + lift;
+                    var y = dome + peak + (lift * (1 - radial));
 
                     var dy = y - CameraHeight;
                     var dz = z + CameraBack;
@@ -178,7 +178,7 @@ namespace AnikiHelper.Services.Visualizer
                     py[index] = (float)(centreY - (y2 * focal / z2));
 
                     // Colour: taller and closer to the centre is greener.
-                    var heat = Math.Min(1.0, (amplitude * 0.75) + ((1 - radial) * 0.35));
+                    var heat = Math.Min(1.0, (amplitude * fade * 0.55) + ((1 - radial) * (1 - radial) * 0.55));
                     var color = heat < 0.5 ? Lerp(Rim, Mid, heat * 2) : Lerp(Mid, Peak, (heat - 0.5) * 2);
                     pc[index] = (color.R << 16) | (color.G << 8) | color.B;
                 }
