@@ -139,6 +139,7 @@ namespace AnikiHelper.Services.Visualizer
 
                     closing = false;
                     IsOpen = true;
+                    lastTrackUri = null;
                     window.Show();
                     window.Activate();
                     AcquireController();
@@ -172,6 +173,7 @@ namespace AnikiHelper.Services.Visualizer
 
                 closing = true;
                 IsOpen = false;
+                songToast?.HideImmediately();
                 nowPlayingTimer.Stop();
                 clockTimer.Stop();
                 ReleaseController();
@@ -230,6 +232,7 @@ namespace AnikiHelper.Services.Visualizer
             coverFrame = (Border)root.FindName("CoverFrame");
             coverScale = (ScaleTransform)root.FindName("CoverScale");
             titleText = (TextBlock)root.FindName("TitleText");
+            infoPanel = (FrameworkElement)root.FindName("InfoPanel");
             artistText = (TextBlock)root.FindName("ArtistText");
             effectText = (TextBlock)root.FindName("EffectText");
             clockText = (TextBlock)root.FindName("ClockText");
@@ -416,6 +419,11 @@ namespace AnikiHelper.Services.Visualizer
         }
 
         private bool leftTriggerDown;
+        private bool leftStickDown;
+        private bool infoHidden;
+        private FrameworkElement infoPanel;
+        private string lastTrackUri;
+        private SpotifyNowPlayingToast songToast;
         private bool rightTriggerDown;
 
         /// <summary>LT / RT: switch the current effect's look, if it has more than one.</summary>
@@ -480,6 +488,51 @@ namespace AnikiHelper.Services.Visualizer
                 : (string)item["show"]?["name"] ?? string.Empty;
             var images = (item["album"]?["images"] ?? item["images"] ?? item["show"]?["images"]) as JArray;
             SetCover(AnikiSpotifyPanelService.PickImage(images, 600));
+
+            // Song changed while the visualizer is open: show the now-playing card bottom-left.
+            var uri = (string)item["uri"];
+            var changed = lastTrackUri != null && !string.IsNullOrEmpty(uri) && uri != lastTrackUri;
+            if (!string.IsNullOrEmpty(uri))
+            {
+                lastTrackUri = uri;
+            }
+
+            if (changed && IsOpen && ((bool?)body["is_playing"] ?? false))
+            {
+                ShowSongToast(titleText.Text, artistText.Text, AnikiSpotifyPanelService.PickImage(images, 300),
+                    (double?)body["progress_ms"] ?? 0, (double?)item["duration_ms"] ?? 0);
+            }
+        }
+
+        private void ShowSongToast(string title, string artist, string imageUrl, double progress, double duration)
+        {
+            try
+            {
+                if (songToast == null)
+                {
+                    songToast = new SpotifyNowPlayingToast(spotify.LogoPath, bottomLeft: true);
+                }
+
+                songToast.OwnerWindow = window;
+                songToast.Show(title, artist, imageUrl, progress, duration, true);
+            }
+            catch (Exception ex)
+            {
+                logger?.Warn(ex, "[AnikiHelper][Visualizer] Now playing card failed.");
+            }
+        }
+
+        // L3: hide or show the album cover, title and artist so only the visualizer is on screen.
+        private void ToggleInfo()
+        {
+            if (infoPanel == null)
+            {
+                return;
+            }
+
+            infoHidden = !infoHidden;
+            infoPanel.BeginAnimation(UIElement.OpacityProperty,
+                new DoubleAnimation(infoPanel.Opacity, infoHidden ? 0 : 1, TimeSpan.FromMilliseconds(300)));
         }
 
         private void SetCover(string url)
@@ -539,6 +592,10 @@ namespace AnikiHelper.Services.Visualizer
                     if (right && !rightTriggerDown) { NextStyle(1); }
                     leftTriggerDown = state.LeftTrigger > 8000 && (left || leftTriggerDown);
                     rightTriggerDown = state.RightTrigger > 8000 && (right || rightTriggerDown);
+
+                    // L3 toggles the cover, title and artist.
+                    if (state.LeftStickHeld && !leftStickDown) { ToggleInfo(); }
+                    leftStickDown = state.LeftStickHeld;
                     return;
                 }
 
@@ -838,7 +895,7 @@ namespace AnikiHelper.Services.Visualizer
       </StackPanel>
     </Grid>
 
-    <StackPanel VerticalAlignment='Center' HorizontalAlignment='Center' Margin='0,40,0,0'>
+    <StackPanel x:Name='InfoPanel' VerticalAlignment='Center' HorizontalAlignment='Center' Margin='0,40,0,0'>
       <Border x:Name='CoverFrame' Width='481' Height='481' BorderThickness='0'
               Background='#14FFFFFF' RenderTransformOrigin='0.5,0.5'>
         <Border.RenderTransform>

@@ -143,8 +143,10 @@ namespace AnikiHelper.Services.Visualizer
             return t * t * (3 - (2 * t));
         }
 
-        private double wavePhase;
-        private double waveEnvelope;
+        private readonly float[] waveHistory = new float[Rings];
+        private double bassFast;
+        private double bassSlow;
+        private float waveNow;
 
         private float[] RingAt(int age)
         {
@@ -156,30 +158,43 @@ namespace AnikiHelper.Services.Visualizer
             // Spectrum around the circle, mirrored left/right, with a little extra detail.
             var half = Spokes / 2.0;
             var rings = Style == 0;
-            float ringValue = 0;
             if (rings)
             {
-                // Water: the music's level drives a slow wave at the centre, so each beat sends
-                // out round crests and troughs that travel outward together.
-                var target = Math.Max(audio.Bass * 0.95, Math.Max(audio.Onset * 0.8, audio.Beat));
-                waveEnvelope = Math.Max(target, waveEnvelope * Math.Exp(-2.6 * delta));
-                wavePhase += delta * Math.PI * 2 * 2.4;
-
-                // Signed: crests rise above the surface and troughs dip below it.
-                ringValue = (float)(Math.Max(0.12, waveEnvelope) * Math.Sin(wavePhase));
+                // Water: the bass alone moves the water. A bass hit lifts the centre above its
+                // recent average (a crest), and the fall-back afterwards dips below it (a trough),
+                // so every hit sends a round wave outward.
+                var bass = (double)audio.Bass;
+                var attack = bass > bassFast ? 30.0 : 6.0;
+                bassFast += (bass - bassFast) * (1 - Math.Exp(-attack * delta));
+                bassSlow += (bass - bassSlow) * (1 - Math.Exp(-1.3 * delta));
+                var swell = (bassFast - (bassSlow * 0.85)) * 2.6;
+                waveNow = (float)(Math.Max(-0.6, Math.Min(1.1, swell)) + (0.05 * Math.Sin(time * Math.PI * 1.6)));
             }
 
             for (var s = 0; s < Spokes; s++)
             {
                 var around = Math.Abs(((s + 0.5) - half) / half);
-                var position = around * (AudioFrame.BandCount - 2);
-                var i = (int)position;
-                var t = (float)(position - i);
-                var value = (audio.Bands[i] * (1 - t)) + (audio.Bands[i + 1] * t);
-                var detail = audio.Bands[30 + ((s * 29) % (AudioFrame.BandCount - 34))];
-                spokeSpectrum[s] = rings
-                    ? ringValue * (0.92f + (detail * 0.16f))
-                    : (float)((1 - Math.Exp(-2.3 * ((value * 0.75f) + (detail * 0.25f)))) / 0.9);
+                if (rings)
+                {
+                    // Everything above the bass (drums, vocals, instruments) becomes peaks
+                    // around the circle that ride outward inside the waves.
+                    var position = 12 + (around * (AudioFrame.BandCount - 14));
+                    var i = (int)position;
+                    var t = (float)(position - i);
+                    var value = (audio.Bands[i] * (1 - t)) + (audio.Bands[i + 1] * t);
+                    var detail = audio.Bands[24 + ((s * 29) % (AudioFrame.BandCount - 28))];
+                    var level = (value * 0.6f) + (detail * 0.4f) + (audio.Onset * (0.25f + (detail * 0.35f)));
+                    spokeSpectrum[s] = (float)Math.Min(1.0, (1 - Math.Exp(-2.4 * level)) / 0.9);
+                }
+                else
+                {
+                    var position = around * (AudioFrame.BandCount - 2);
+                    var i = (int)position;
+                    var t = (float)(position - i);
+                    var value = (audio.Bands[i] * (1 - t)) + (audio.Bands[i + 1] * t);
+                    var detail = audio.Bands[30 + ((s * 29) % (AudioFrame.BandCount - 34))];
+                    spokeSpectrum[s] = (float)((1 - Math.Exp(-2.3 * ((value * 0.75f) + (detail * 0.25f)))) / 0.9);
+                }
             }
 
             // Rings travel outward a little slower than bursts, like water.
@@ -198,13 +213,16 @@ namespace AnikiHelper.Services.Visualizer
                 step -= 1;
                 newest = (newest + 1) % Rings;
                 Array.Copy(spokeSpectrum, history[newest], Spokes);
+                waveHistory[newest] = waveNow;
             }
 
             var centre = history[newest];
             for (var s = 0; s < Spokes; s++)
             {
-                centre[s] = rings ? spokeSpectrum[s] : Math.Max(centre[s], spokeSpectrum[s]);
+                centre[s] = Math.Max(centre[s], spokeSpectrum[s]);
             }
+
+            waveHistory[newest] = rings && Math.Abs(waveNow) > Math.Abs(waveHistory[newest]) ? waveNow : waveHistory[newest];
 
             EnsureBuffers(size);
             var focal = height * 1.2;
@@ -229,6 +247,8 @@ namespace AnikiHelper.Services.Visualizer
                 var dome = DomeHeight * (1 - (radial * radial));
                 var row = r == 0 ? null : RingAt(r - 1);
                 var fade = 1.0 - (radial * 0.55);
+                var wave = r == 0 ? waveNow : waveHistory[((newest - (r - 1)) % Rings + Rings) % Rings];
+                var crest = Math.Max(0.2, Math.Min(1.4, 0.4 + (wave * 1.2)));
                 for (var s = 0; s < Spokes; s++)
                 {
                     var angle = (s / (double)Spokes * Math.PI * 2) + spin;
@@ -252,9 +272,11 @@ namespace AnikiHelper.Services.Visualizer
                     var peak = spiral
                         ? stairHeight - dome
                         : Style == 0
-                        ? amplitude * 2.6 * fade
+                        ? ((wave * 2.3) + (Math.Pow(amplitude, 1.35) * 1.9 * crest)) * fade
                         : Math.Pow(amplitude, 1.35) * PeakScale * fade * (r == 0 ? 0.6 : 1);
-                    amplitude = Math.Abs(amplitude);
+                    amplitude = Style == 0
+                        ? (float)Math.Min(1.0, Math.Max(amplitude * crest, Math.Abs(wave) * 0.8))
+                        : Math.Abs(amplitude);
                     var x = Math.Cos(angle) * radius;
                     var z = Math.Sin(angle) * radius;
                     var y = dome + peak + (lift * (1 - radial));

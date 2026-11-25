@@ -161,6 +161,7 @@ namespace AnikiHelper.Services.Spotify
             this.canShowNowPlaying = canShowNowPlaying;
             api = new SpotifyApiClient(logger, dataDirectory);
             nowPlayingToast = new SpotifyNowPlayingToast(System.IO.Path.Combine(dataDirectory, "logo.png"));
+            LogoPath = System.IO.Path.Combine(dataDirectory, "logo.png");
             RunOnUi(StartNowPlayingWatcher);
         }
 
@@ -269,6 +270,9 @@ namespace AnikiHelper.Services.Spotify
                 watching = false;
             }
         }
+
+        // The user's logo.png for now-playing cards (used by the visualizer's own card).
+        public string LogoPath { get; }
 
         public event Action<bool> OpenStateChanged;
 

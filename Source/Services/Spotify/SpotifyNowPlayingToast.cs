@@ -62,10 +62,19 @@ namespace AnikiHelper.Services.Spotify
         private bool playing;
         private DateTime stampUtc;
 
-        public SpotifyNowPlayingToast(string logoPath)
+        public SpotifyNowPlayingToast(string logoPath, bool bottomLeft = false)
         {
             this.logoPath = logoPath;
+            this.bottomLeft = bottomLeft;
         }
+
+        // Bottom-left placement (used over the visualizer); slides in from the left.
+        private readonly bool bottomLeft;
+
+        /// <summary>Window the card stays above (the visualizer), if any.</summary>
+        public Window OwnerWindow { get; set; }
+
+        private double SlideFrom => bottomLeft ? -40 : 40;
 
         public void Show(string title, string artist, string imageUrl, double progress, double duration, bool isPlaying)
         {
@@ -87,6 +96,11 @@ namespace AnikiHelper.Services.Spotify
             UpdateProgress();
 
             var wasVisible = window.IsVisible && card.Opacity > 0.5;
+            if (!window.IsVisible && OwnerWindow != null && window.Owner != OwnerWindow)
+            {
+                try { window.Owner = OwnerWindow; } catch { }
+            }
+
             if (!window.IsVisible)
             {
                 window.Show();
@@ -96,7 +110,7 @@ namespace AnikiHelper.Services.Spotify
             if (!wasVisible)
             {
                 card.BeginAnimation(UIElement.OpacityProperty, new DoubleAnimation(0, 1, TimeSpan.FromMilliseconds(320)));
-                slide.BeginAnimation(TranslateTransform.XProperty, new DoubleAnimation(40, 0, TimeSpan.FromMilliseconds(380))
+                slide.BeginAnimation(TranslateTransform.XProperty, new DoubleAnimation(SlideFrom, 0, TimeSpan.FromMilliseconds(380))
                 {
                     EasingFunction = new CubicEase { EasingMode = EasingMode.EaseOut }
                 });
@@ -158,7 +172,7 @@ namespace AnikiHelper.Services.Spotify
                 }
             };
             card.BeginAnimation(UIElement.OpacityProperty, fade);
-            slide.BeginAnimation(TranslateTransform.XProperty, new DoubleAnimation(0, 30, TimeSpan.FromMilliseconds(450))
+            slide.BeginAnimation(TranslateTransform.XProperty, new DoubleAnimation(0, bottomLeft ? -30 : 30, TimeSpan.FromMilliseconds(450))
             {
                 EasingFunction = new CubicEase { EasingMode = EasingMode.EaseIn }
             });
@@ -271,7 +285,7 @@ namespace AnikiHelper.Services.Spotify
 
         private void Position()
         {
-            double left = 0, top = 0, width = SystemParameters.PrimaryScreenWidth;
+            double left = 0, top = 0, width = SystemParameters.PrimaryScreenWidth, height = SystemParameters.PrimaryScreenHeight;
             try
             {
                 var main = Application.Current?.MainWindow;
@@ -284,10 +298,18 @@ namespace AnikiHelper.Services.Spotify
                     left = topLeft.X;
                     top = topLeft.Y;
                     width = bottomRight.X - topLeft.X;
+                    height = bottomRight.Y - topLeft.Y;
                 }
             }
             catch
             {
+            }
+
+            if (bottomLeft)
+            {
+                window.Left = left + 24;
+                window.Top = top + height - window.Height - 24;
+                return;
             }
 
             // Top-right corner, just below the theme's top bar.
