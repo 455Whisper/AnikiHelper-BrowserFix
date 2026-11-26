@@ -8769,6 +8769,9 @@ namespace AnikiHelper
 
             // Spotify now-playing card in the top-left corner of the AFK screen.
             screenSaverNowPlaying = new Services.Spotify.ScreenSaverNowPlaying(spotifyPanelService, logger);
+            // Spotify search box: type with the Aniki on-screen keyboard.
+            spotifyPanelService.OpenKeyboard = (text, submit, cancel) =>
+                inGameOverlayService?.OpenVirtualKeyboardForVideoCenter(text, submit, cancel);
             screenSaverService.ActiveChanged += (isActive, ssWindow) => screenSaverNowPlaying.SetActive(isActive, ssWindow);
 
             horizontalFocusFixService = new NavigationFixService(

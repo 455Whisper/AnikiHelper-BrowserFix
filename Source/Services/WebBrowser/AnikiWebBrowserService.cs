@@ -580,6 +580,13 @@ namespace AnikiHelper.Services.WebBrowser
                 }
 
                 pointerController.ProcessInput(state);
+
+                // X on a web page: right-click where the cursor is.
+                if (state.KeyboardPressed && !state.IsFullPadState)
+                {
+                    pointerController.RightClick();
+                    return;
+                }
             }
             else
             {
@@ -660,13 +667,12 @@ namespace AnikiHelper.Services.WebBrowser
                 return;
             }
 
-            if (state.KeyboardPressed)
+            // Y on a web page: open the keyboard (X is right-click now).
+            if (state.AddressPressed)
             {
                 InvokeOnUi(OpenVirtualKeyboardCore);
                 return;
             }
-
-            // Custom: Y no longer opens the address prompt on web pages.
 
             if (state.EnterPressed)
             {
@@ -1539,7 +1545,8 @@ namespace AnikiHelper.Services.WebBrowser
                 AddFooterLegendItem("ButtonPromptLB", "LB", "WebBrowser_LegendPrevious", "Previous");
                 AddFooterLegendItem("ButtonPromptRB", "RB", "WebBrowser_LegendNext", "Next");
                 AddFooterLegendItem("ButtonPromptStart", "Start", "WebBrowser_LegendEnter", "Enter");
-                AddFooterLegendItem("ButtonPromptX", "X", "WebBrowser_LegendKeyboard", "Keyboard");
+                AddFooterLegendItem("ButtonPromptX", "X", "WebBrowser_LegendRightClick", "Right click");
+                AddFooterLegendItem("ButtonPromptY", "Y", "WebBrowser_LegendKeyboard", "Keyboard");
                 AddFooterLegendItem("ButtonPromptDPadLeft", "\u25C0", "WebBrowser_LegendAudio", "Audio");
                 AddFooterLegendItem("ButtonPromptDPadRight", "\u25B6", "WebBrowser_LegendExtensions", "Extensions");
                 AddFooterLegendItem("ButtonPromptL3", "L3", "WebBrowser_LegendGameMode", "Game mode");
@@ -4551,6 +4558,21 @@ namespace AnikiHelper.Services.WebBrowser
             }
         }
 
+        /// <summary>Right-click at the cursor (press and release), if the pointer is live.</summary>
+        public void RightClick()
+        {
+            lock (stateLock)
+            {
+                if (!sessionActive || inputSuspended)
+                {
+                    return;
+                }
+
+                SendMouseInput(0, 0, 0, MouseEventRightDown);
+                SendMouseInput(0, 0, 0, MouseEventRightUp);
+            }
+        }
+
         public void SuspendInput()
         {
             moverStickX = 0;
@@ -5223,6 +5245,8 @@ namespace AnikiHelper.Services.WebBrowser
         private const int CursorShowing = 0x00000001;
         private const uint MouseEventLeftDown = 0x0002;
         private const uint MouseEventLeftUp = 0x0004;
+        private const uint MouseEventRightDown = 0x0008;
+        private const uint MouseEventRightUp = 0x0010;
         private const uint MouseEventWheel = 0x0800;
 
         [StructLayout(LayoutKind.Sequential)]

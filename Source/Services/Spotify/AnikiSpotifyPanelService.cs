@@ -70,6 +70,23 @@ namespace AnikiHelper.Services.Spotify
         private string watchedTrackUri;
         private bool watchBaselineSet;
         private readonly ObservableCollection<SpotifyListItem> recentItems = new ObservableCollection<SpotifyListItem>();
+        private readonly ObservableCollection<SpotifyListItem> searchItems = new ObservableCollection<SpotifyListItem>();
+        private Button searchButton;
+        private TextBlock searchText;
+        private FrameworkElement searchSection;
+        private Button searchHeader;
+        private TextBlock searchChevron;
+        private ItemsControl searchList;
+        private TextBlock searchStatus;
+        private string lastSearch;
+        private int searchVersion;
+        private bool keyboardSessionOpen;
+
+        /// <summary>
+        /// Opens the Aniki on-screen keyboard: (initial text, on submit(text, _), on cancel).
+        /// Set by the plugin; used by the search box.
+        /// </summary>
+        public Action<string, Action<string, bool>, Action> OpenKeyboard { get; set; }
         private readonly ObservableCollection<SpotifyListItem> playlistItems = new ObservableCollection<SpotifyListItem>();
 
         private Window window;
@@ -1102,6 +1119,17 @@ namespace AnikiHelper.Services.Spotify
 
             recentList.ItemsSource = recentItems;
             playlistList.ItemsSource = playlistItems;
+            searchButton = (Button)root.FindName("SearchBtn");
+            searchText = (TextBlock)root.FindName("SearchText");
+            searchSection = (FrameworkElement)root.FindName("SearchSection");
+            searchHeader = (Button)root.FindName("SearchHeader");
+            searchChevron = (TextBlock)root.FindName("SearchChevron");
+            searchList = (ItemsControl)root.FindName("SearchList");
+            searchStatus = (TextBlock)root.FindName("SearchStatus");
+            searchList.ItemsSource = searchItems;
+            searchChevron.Text = GlyphChevronDown;
+            searchButton.Click += (s, e) => OpenSearchKeyboard();
+            searchHeader.Click += (s, e) => ToggleSection(searchList, searchChevron);
 
             heartButton.Content = GlyphHeart;
             shuffleButton.Content = GlyphShuffle;
@@ -1300,7 +1328,7 @@ namespace AnikiHelper.Services.Spotify
             try
             {
                 var key = e.StagingItem.Input as KeyEventArgs;
-                if (key == null || key.RoutedEvent != Keyboard.PreviewKeyDownEvent || !IsOpen || window == null || closing)
+                if (key == null || key.RoutedEvent != Keyboard.PreviewKeyDownEvent || !IsOpen || window == null || closing || keyboardSessionOpen)
                 {
                     return;
                 }
@@ -1375,6 +1403,202 @@ namespace AnikiHelper.Services.Spotify
             {
                 FocusLater(mainView.Visibility == Visibility.Visible ? playButton : setupPrimary);
             }
+        }
+
+        // ======================= search =======================
+
+        private void OpenSearchKeyboard()
+        {
+            if (OpenKeyboard == null)
+            {
+                ShowToast("Keyboard isn't available");
+                return;
+            }
+
+            keyboardSessionOpen = true;
+            try
+            {
+                OpenKeyboard(
+                    lastSearch ?? string.Empty,
+                    (text, ignored) => RunOnUi(async () =>
+                    {
+                        keyboardSessionOpen = false;
+                        RefocusPanel(searchButton);
+                        await SearchAsync(text);
+                    }),
+                    () => RunOnUi(() =>
+                    {
+                        keyboardSessionOpen = false;
+                        RefocusPanel(searchButton);
+                    }));
+            }
+            catch (Exception ex)
+            {
+                keyboardSessionOpen = false;
+                logger?.Warn(ex, "[AnikiHelper][Spotify] Could not open the keyboard for search.");
+            }
+        }
+
+        private void RefocusPanel(IInputElement element)
+        {
+            if (window == null || !IsOpen)
+            {
+                return;
+            }
+
+            try
+            {
+                window.Activate();
+                window.Dispatcher.BeginInvoke(new Action(() =>
+                {
+                    element?.Focus();
+                    if (element != null)
+                    {
+                        Keyboard.Focus(element);
+                    }
+                }), DispatcherPriority.Loaded);
+            }
+            catch
+            {
+            }
+        }
+
+        private async Task SearchAsync(string query)
+        {
+            query = (query ?? string.Empty).Trim();
+            if (query.Length == 0)
+            {
+                return;
+            }
+
+            var version = ++searchVersion;
+            lastSearch = query;
+            searchText.Text = query;
+            searchText.Foreground = Brushes.White;
+            searchSection.Visibility = Visibility.Visible;
+            searchList.Visibility = Visibility.Visible;
+            searchChevron.Text = GlyphChevronDown;
+            searchItems.Clear();
+            searchStatus.Text = "Searching...";
+            searchStatus.Visibility = Visibility.Visible;
+
+            try
+            {
+                var result = await api.SendAsync(HttpMethod.Get,
+                    "/search?q=" + Uri.EscapeDataString(query) + "&type=track,artist,album,playlist&limit=10");
+                if (version != searchVersion)
+                {
+                    return;
+                }
+
+                if (!result.Ok)
+                {
+                    searchStatus.Text = "Search failed. Try again.";
+                    logger?.Warn("[AnikiHelper][Spotify] Search failed for '" + query + "'.");
+                    return;
+                }
+
+                var body = result.Body;
+                foreach (var track in Items(body?["tracks"]).Take(8))
+                {
+                    var uri = (string)track["uri"];
+                    var artists = track["artists"] as JArray;
+                    searchItems.Add(new SpotifyListItem
+                    {
+                        Title = (string)track["name"],
+                        Subtitle = "Song • " + (artists != null ? string.Join(", ", artists.Select(a => (string)a["name"])) : string.Empty),
+                        ImageUrl = PickImage(track["album"]?["images"] as JArray, 64),
+                        Play = new RelayCommand(async () => await PlayUrisAsync(uri))
+                    });
+                }
+
+                foreach (var artist in Items(body?["artists"]).Take(3))
+                {
+                    var uri = (string)artist["uri"];
+                    searchItems.Add(new SpotifyListItem
+                    {
+                        Title = (string)artist["name"],
+                        Subtitle = "Artist",
+                        ImageUrl = PickImage(artist["images"] as JArray, 64),
+                        ContextUri = uri,
+                        Play = new RelayCommand(async () => await PlayContextAsync(uri, null))
+                    });
+                }
+
+                foreach (var album in Items(body?["albums"]).Take(4))
+                {
+                    var uri = (string)album["uri"];
+                    var artists = album["artists"] as JArray;
+                    searchItems.Add(new SpotifyListItem
+                    {
+                        Title = (string)album["name"],
+                        Subtitle = "Album • " + (artists != null ? string.Join(", ", artists.Select(a => (string)a["name"])) : string.Empty),
+                        ImageUrl = PickImage(album["images"] as JArray, 64),
+                        ContextUri = uri,
+                        Play = new RelayCommand(async () => await PlayContextAsync(uri, null))
+                    });
+                }
+
+                foreach (var playlist in Items(body?["playlists"]))
+                {
+                    // Spotify's own playlists can't be opened by apps any more; skip them.
+                    var ownerId = (string)playlist["owner"]?["id"];
+                    if (string.Equals(ownerId, "spotify", StringComparison.OrdinalIgnoreCase))
+                    {
+                        continue;
+                    }
+
+                    var uri = (string)playlist["uri"];
+                    searchItems.Add(new SpotifyListItem
+                    {
+                        Title = (string)playlist["name"],
+                        Subtitle = "Playlist • " + ((string)playlist["owner"]?["display_name"] ?? string.Empty),
+                        ImageUrl = PickImage(playlist["images"] as JArray, 64),
+                        ContextUri = uri,
+                        PlaylistId = (string)playlist["id"],
+                        Play = new RelayCommand(async () => await PlayContextAsync(uri, null))
+                    });
+
+                    if (searchItems.Count(i => i.PlaylistId != null) >= 4)
+                    {
+                        break;
+                    }
+                }
+
+                if (searchItems.Count == 0)
+                {
+                    searchStatus.Text = "No results for \"" + query + "\"";
+                    return;
+                }
+
+                searchStatus.Visibility = Visibility.Collapsed;
+                window?.Dispatcher.BeginInvoke(new Action(() =>
+                {
+                    var container = searchList.ItemContainerGenerator.ContainerFromIndex(0) as DependencyObject;
+                    var button = container != null ? FindChild<ButtonBase>(container) : null;
+                    if (button != null)
+                    {
+                        button.Focus();
+                        Keyboard.Focus(button);
+                        button.BringIntoView();
+                    }
+                }), DispatcherPriority.Loaded);
+            }
+            catch (Exception ex)
+            {
+                if (version == searchVersion)
+                {
+                    searchStatus.Text = "Search failed. Try again.";
+                }
+
+                logger?.Warn(ex, "[AnikiHelper][Spotify] Search failed.");
+            }
+        }
+
+        // Search result lists can contain nulls (removed items); skip them.
+        private static IEnumerable<JObject> Items(JToken section)
+        {
+            return ((section?["items"] as JArray) ?? new JArray()).OfType<JObject>();
         }
 
         private void ToggleSection(ItemsControl list, TextBlock chevron)
@@ -2220,7 +2444,7 @@ namespace AnikiHelper.Services.Spotify
         private bool TryOpenFocusedPlaylist()
         {
             var focused = Keyboard.FocusedElement as FrameworkElement;
-            if (focused == null || !IsInside(focused, playlistList))
+            if (focused == null || !(IsInside(focused, playlistList) || IsInside(focused, searchList)))
             {
                 return false;
             }
@@ -3022,6 +3246,28 @@ namespace AnikiHelper.Services.Spotify
           <TextBlock x:Name='PlaylistStatus' Margin='12,16,0,0' FontSize='20' Foreground='#A7A7A7' Visibility='Collapsed'/>
         </StackPanel>
         <StackPanel x:Name='LibraryView' Margin='24,18,24,28'>
+          <Button x:Name='SearchBtn' Style='{StaticResource RowBtn}' Margin='0,0,0,12'>
+            <Border Background='#2A2A2A' CornerRadius='26' Padding='20,12'>
+              <StackPanel Orientation='Horizontal'>
+                <TextBlock Text='&#xE721;' FontFamily='Segoe Fluent Icons, Segoe MDL2 Assets' FontSize='22'
+                           Foreground='#B3B3B3' VerticalAlignment='Center'/>
+                <TextBlock x:Name='SearchText' Text='What do you want to play?' FontSize='22' Foreground='#B3B3B3'
+                           Margin='14,0,0,0' VerticalAlignment='Center' TextTrimming='CharacterEllipsis'/>
+              </StackPanel>
+            </Border>
+          </Button>
+          <StackPanel x:Name='SearchSection' Visibility='Collapsed' Margin='0,0,0,18'>
+            <Button x:Name='SearchHeader' Style='{StaticResource RowBtn}'>
+              <Grid>
+                <TextBlock Text='Search results' FontSize='28' FontWeight='Bold' Foreground='#FFFFFF'/>
+                <TextBlock x:Name='SearchChevron' HorizontalAlignment='Right' VerticalAlignment='Center'
+                           FontFamily='Segoe Fluent Icons, Segoe MDL2 Assets' FontSize='24' Foreground='#FFFFFF'/>
+              </Grid>
+            </Button>
+            <ItemsControl x:Name='SearchList' Focusable='False' ItemTemplate='{StaticResource RowTemplate}'
+                          KeyboardNavigation.DirectionalNavigation='Continue'/>
+            <TextBlock x:Name='SearchStatus' Margin='12,10,0,0' FontSize='20' Foreground='#A7A7A7' Visibility='Collapsed'/>
+          </StackPanel>
           <Button x:Name='RecentHeader' Style='{StaticResource RowBtn}'>
             <Grid>
               <TextBlock Text='Recently played' FontSize='28' FontWeight='Bold' Foreground='#FFFFFF'/>
