@@ -156,9 +156,9 @@ namespace AnikiHelper.Services.Visualizer
         }
 
         private readonly float[] waveHistory = new float[Rings];
-        // Spiral peak sites: a jittered grid of points over the surface. Each follows one part of
-        // the spectrum (40% bass, 35% mids, 25% highs, spread all the way round) and raises a
-        // pointed peak that falls away on every side.
+        // Spiral peak sites: a dense jittered grid of points over the surface (about 1,000). Each
+        // follows one part of the spectrum (spread all the way round) and raises a sharp peak
+        // that falls away on every side.
         private int[] siteSpoke;
         private int[] siteAge;
         private double[] siteGain;
@@ -173,8 +173,8 @@ namespace AnikiHelper.Services.Visualizer
                 return;
             }
 
-            const double spacing = 1.5;
-            const double reach = 1.3;
+            const double spacing = 0.85;
+            const double reach = 0.7;
             var random = new Random(11);
             var xs = new List<double>();
             var zs = new List<double>();
@@ -198,8 +198,9 @@ namespace AnikiHelper.Services.Visualizer
                     xs.Add(Math.Cos(a) * rr);
                     zs.Add(Math.Sin(a) * rr);
                     var pick = random.NextDouble();
-                    var around = pick < 0.4 ? random.NextDouble() * 0.15
-                        : pick < 0.75 ? 0.15 + (random.NextDouble() * 0.4)
+                    // 20% bass, 40% mids, 40% highs, so each song's own mix shows.
+                    var around = pick < 0.2 ? random.NextDouble() * 0.15
+                        : pick < 0.6 ? 0.15 + (random.NextDouble() * 0.4)
                         : 0.55 + (random.NextDouble() * 0.45);
                     var side = random.NextDouble() < 0.5 ? 1 : -1;
                     spokes.Add((int)(((Spokes / 2.0) + (side * around * Spokes / 2.0) - 0.5 + Spokes) % Spokes));
@@ -237,8 +238,8 @@ namespace AnikiHelper.Services.Visualizer
                             continue;
                         }
 
-                        var w = 1 - (Math.Sqrt(d2) / reach);
-                        w *= w;
+                        // Sharp tip: (1 - d/reach)^2.5.
+                        var w = Math.Pow(1 - (Math.Sqrt(d2) / reach), 2.5);
                         for (var k = 0; k < 3; k++)
                         {
                             if (w > bestWeight[k])
@@ -264,6 +265,17 @@ namespace AnikiHelper.Services.Visualizer
                     }
                 }
             }
+        }
+
+        // Analyzer bands whose centres fall between 105 and 135 Hz (bands are log-spaced 50-14000 Hz).
+        private static readonly int SpinBandLow = BandFor(105);
+        private static readonly int SpinBandHigh = Math.Max(BandFor(105), BandFor(135));
+        private double spinEnergy;
+
+        private static int BandFor(double hz)
+        {
+            var b = (int)Math.Round((Math.Log(hz / 50.0) / Math.Log(14000.0 / 50.0) * AudioFrame.BandCount) - 0.5);
+            return Math.Max(0, Math.Min(AudioFrame.BandCount - 1, b));
         }
 
         private double colourWash;
@@ -385,8 +397,17 @@ namespace AnikiHelper.Services.Visualizer
             {
                 var energy = (audio.Bass * 0.55) + (audio.Mid * 0.3) + (audio.Onset * 0.3);
                 spiralEnergy = energy > spiralEnergy ? energy : spiralEnergy + ((energy - spiralEnergy) * (1 - Math.Exp(-4 * delta)));
-                // Slow, steady turn (a quarter of the old speed) that surges a bit more with loud music.
-                spiralPhase += delta * (0.07 + (spiralEnergy * spiralEnergy * 0.38));
+                // Turn speed: a slow steady base, sped up only by 105-135 Hz (the kick drum and
+                // bass-note punch), not by the rest of the music.
+                var punch = 0.0;
+                for (var b = SpinBandLow; b <= SpinBandHigh; b++)
+                {
+                    punch += audio.Bands[b];
+                }
+
+                punch /= SpinBandHigh - SpinBandLow + 1;
+                spinEnergy = punch > spinEnergy ? punch : spinEnergy + ((punch - spinEnergy) * (1 - Math.Exp(-4 * delta)));
+                spiralPhase += delta * (0.035 + (spinEnergy * spinEnergy * 0.38));
             }
             while (step >= 1)
             {
@@ -410,7 +431,8 @@ namespace AnikiHelper.Services.Visualizer
                 for (var c = 0; c < siteSpoke.Length; c++)
                 {
                     var level = history[((newest - siteAge[c]) % Rings + Rings) % Rings][siteSpoke[c]];
-                    var amp = Math.Pow(level, 1.2) * 2.0 * (0.5 + (spiralEnergy * 0.8)) * siteGain[c];
+                    // Higher contrast so only a site's own sound making a real hit raises it.
+                    var amp = Math.Pow(level, 1.6) * 2.3 * (0.5 + (spiralEnergy * 0.8)) * siteGain[c];
                     siteAmp[c] = 2.13 * (1 - Math.Exp(-amp / 2.13));
                 }
             }

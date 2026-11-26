@@ -178,6 +178,18 @@ namespace AnikiHelper.Services.Spotify
             });
         }
 
+        /// <summary>Keep a visible card up: restarts its auto-hide countdown.</summary>
+        public void Hold()
+        {
+            if (window != null && window.IsVisible && hideTimer != null)
+            {
+                hideTimer.Stop();
+                hideTimer.Start();
+            }
+        }
+
+        public bool IsShowing => window != null && window.IsVisible && card != null && card.Opacity > 0.5;
+
         public void HideImmediately()
         {
             if (window == null)

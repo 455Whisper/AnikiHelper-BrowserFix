@@ -441,6 +441,13 @@ namespace AnikiHelper.Services.Visualizer
 
         private bool leftTriggerDown;
         private bool leftStickDown;
+        private bool yDown;
+        private bool yCardShown;
+        private string songImageUrl;
+        private double songProgressMs;
+        private double songDurationMs;
+        private bool songPlaying;
+        private DateTime songFetchedUtc;
         private DateTime lastStyleSwitchUtc = DateTime.MinValue;
         private bool infoHidden;
         private FrameworkElement infoPanel;
@@ -521,6 +528,11 @@ namespace AnikiHelper.Services.Visualizer
 
             // Song changed while the visualizer is open: show the now-playing card bottom-left.
             var uri = (string)item["uri"];
+            songImageUrl = AnikiSpotifyPanelService.PickImage(images, 300);
+            songProgressMs = (double?)body["progress_ms"] ?? 0;
+            songDurationMs = (double?)item["duration_ms"] ?? 0;
+            songPlaying = (bool?)body["is_playing"] ?? false;
+            songFetchedUtc = DateTime.UtcNow;
             var changed = lastTrackUri != null && !string.IsNullOrEmpty(uri) && uri != lastTrackUri;
             if (!string.IsNullOrEmpty(uri))
             {
@@ -541,7 +553,7 @@ namespace AnikiHelper.Services.Visualizer
             }
         }
 
-        private void ShowSongToast(string title, string artist, string imageUrl, double progress, double duration)
+        private void ShowSongToast(string title, string artist, string imageUrl, double progress, double duration, bool playing = true)
         {
             try
             {
@@ -551,12 +563,29 @@ namespace AnikiHelper.Services.Visualizer
                 }
 
                 songToast.OwnerWindow = window;
-                songToast.Show(title, artist, imageUrl, progress, duration, true);
+                songToast.Show(title, artist, imageUrl, progress, duration, playing);
             }
             catch (Exception ex)
             {
                 logger?.Warn(ex, "[AnikiHelper][Visualizer] Now playing card failed.");
             }
+        }
+
+        private void ShowHeldSongCard()
+        {
+            if (string.IsNullOrEmpty(titleText?.Text))
+            {
+                return;
+            }
+
+            var progress = songProgressMs + (songPlaying ? (DateTime.UtcNow - songFetchedUtc).TotalMilliseconds : 0);
+            if (songDurationMs > 0)
+            {
+                progress = Math.Min(progress, songDurationMs);
+            }
+
+            ShowSongToast(titleText.Text, artistText.Text, songImageUrl, progress, songDurationMs, songPlaying);
+            yCardShown = true;
         }
 
         // L3: hide or show the album cover, title and artist so only the visualizer is on screen.
@@ -633,6 +662,25 @@ namespace AnikiHelper.Services.Visualizer
                     // L3 toggles the cover, title and artist.
                     if (state.LeftStickHeld && !leftStickDown) { ToggleInfo(); }
                     leftStickDown = state.LeftStickHeld;
+
+                    // Hold Y (while the song info is hidden): show the now-playing card for as
+                    // long as it's held; it fades out when Y is released.
+                    var y = (state.ButtonMask & (1 << 3)) != 0;
+                    if (y && !yDown && infoHidden)
+                    {
+                        ShowHeldSongCard();
+                    }
+                    else if (y && yCardShown)
+                    {
+                        songToast?.Hold();
+                    }
+                    else if (!y && yDown && yCardShown)
+                    {
+                        yCardShown = false;
+                        songToast?.Hide();
+                    }
+
+                    yDown = y;
                     return;
                 }
 

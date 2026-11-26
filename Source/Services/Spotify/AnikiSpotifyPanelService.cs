@@ -1170,6 +1170,14 @@ namespace AnikiHelper.Services.Spotify
                 }
             };
             window.PreviewKeyDown += Window_PreviewKeyDown;
+            if (!keyboardHookAttached)
+            {
+                // Keys pressed while another Playnite window (the library, the visualizer) has
+                // keyboard focus never reach the panel. Catch them app-wide while it's open.
+                keyboardHookAttached = true;
+                InputManager.Current.PreProcessInput += OnAppPreProcessInput;
+            }
+
             window.Closed += (s, e) =>
             {
                 // Window was closed for real (Alt+F4 or Playnite shutting down): reset.
@@ -1247,29 +1255,7 @@ namespace AnikiHelper.Services.Spotify
                 case Key.Back:
                 case Key.BrowserBack:
                     e.Handled = true;
-                    if ((DateTime.UtcNow - lastBackUtc).TotalMilliseconds <= 250)
-                    {
-                        break;
-                    }
-
-                    lastBackUtc = DateTime.UtcNow;
-                    if (audioOnly)
-                    {
-                        Close();
-                    }
-                    else if (IsPlaylistViewOpen && !IsSideFocused())
-                    {
-                        ClosePlaylistView();
-                    }
-                    else if (IsSideOpen)
-                    {
-                        CloseSide(true);
-                    }
-                    else
-                    {
-                        Close();
-                    }
-
+                    KeyboardBack();
                     break;
                 case Key.MediaPlayPause:
                     e.Handled = true;
@@ -1280,6 +1266,87 @@ namespace AnikiHelper.Services.Spotify
 
         private DateTime lastActivateUtc = DateTime.MinValue;
         private DateTime lastBackUtc = DateTime.MinValue;
+        private bool keyboardHookAttached;
+
+        // Esc / Backspace: step back (playlist -> list, side tab -> main), then close.
+        private void KeyboardBack()
+        {
+            if ((DateTime.UtcNow - lastBackUtc).TotalMilliseconds <= 250)
+            {
+                return;
+            }
+
+            lastBackUtc = DateTime.UtcNow;
+            if (audioOnly)
+            {
+                Close();
+            }
+            else if (IsPlaylistViewOpen && !IsSideFocused())
+            {
+                ClosePlaylistView();
+            }
+            else if (IsSideOpen)
+            {
+                CloseSide(true);
+            }
+            else
+            {
+                Close();
+            }
+        }
+
+        private void OnAppPreProcessInput(object sender, PreProcessInputEventArgs e)
+        {
+            try
+            {
+                var key = e.StagingItem.Input as KeyEventArgs;
+                if (key == null || key.RoutedEvent != Keyboard.PreviewKeyDownEvent || !IsOpen || window == null || closing)
+                {
+                    return;
+                }
+
+                // Focus is inside the panel: its own key handler takes care of it.
+                var focused = Keyboard.FocusedElement as DependencyObject;
+                if (focused != null && Window.GetWindow(focused) == window)
+                {
+                    return;
+                }
+
+                var k = key.Key == Key.System ? key.SystemKey : key.Key;
+                switch (k)
+                {
+                    case Key.Escape:
+                    case Key.Back:
+                    case Key.BrowserBack:
+                        e.Cancel();
+                        if (!key.IsRepeat)
+                        {
+                            KeyboardBack();
+                        }
+
+                        break;
+                    case Key.Up:
+                    case Key.Down:
+                    case Key.Left:
+                    case Key.Right:
+                    case Key.Enter:
+                    case Key.Space:
+                        // Pull keyboard focus back into the panel so the next press works there.
+                        e.Cancel();
+                        window.Activate();
+                        if (!(Keyboard.FocusedElement is DependencyObject now && Window.GetWindow(now) == window))
+                        {
+                            windowHost.MoveFocus(new TraversalRequest(FocusNavigationDirection.First));
+                        }
+
+                        break;
+                }
+            }
+            catch (Exception ex)
+            {
+                logger?.Warn(ex, "[AnikiHelper][Spotify] Keyboard hook failed.");
+            }
+        }
 
         private void ActivateFocused()
         {
