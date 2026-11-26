@@ -322,7 +322,8 @@ namespace AnikiHelper.Services.Visualizer
             // Colour patches: strength follows how much music there is (rises quickly, fades over
             // about a second when it goes quiet); hits nudge the colours round the wheel.
             var music = Math.Min(1.0, (audio.Bass * 0.45) + (audio.Mid * 0.45) + (audio.Onset * 0.35));
-            music = Math.Pow(music, 1.3);
+            // Scaled by loudness, so a quiet intro gets soft colour and the full beat gets strong colour.
+            music = Math.Pow(music, 1.3) * (0.25 + (0.75 * audio.Loudness * audio.Loudness));
             colourWash += (music - colourWash) * (1 - Math.Exp(-(music > colourWash ? 6.0 : 0.9) * delta));
             hueBase += delta * (0.015 + (audio.Onset * 0.12));
 
@@ -431,8 +432,12 @@ namespace AnikiHelper.Services.Visualizer
                 for (var c = 0; c < siteSpoke.Length; c++)
                 {
                     var level = history[((newest - siteAge[c]) % Rings + Rings) % Rings][siteSpoke[c]];
-                    // Higher contrast so only a site's own sound making a real hit raises it.
-                    var amp = Math.Pow(level, 1.6) * 2.3 * (0.5 + (spiralEnergy * 0.8)) * siteGain[c];
+                    // Loudness sets how many peaks fire and how tall: quiet parts need a strong hit
+                    // in a site's own sound to raise it (and stay low); loud parts let most fire.
+                    var loud = audio.Loudness;
+                    var threshold = 0.7 - (0.5 * loud);
+                    var gated = Math.Max(0, level - threshold) / (1 - threshold);
+                    var amp = Math.Pow(gated, 1.4) * 2.3 * (0.5 + (spiralEnergy * 0.8)) * (0.25 + (0.75 * loud * loud)) * siteGain[c];
                     siteAmp[c] = 2.13 * (1 - Math.Exp(-amp / 2.13));
                 }
             }

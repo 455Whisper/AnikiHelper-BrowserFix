@@ -24,6 +24,12 @@ namespace AnikiHelper.Services.Visualizer
 
         /// <summary>Any new sound starting (spectral flux), not just drums.</summary>
         public float Onset;
+
+        /// <summary>
+        /// How loud the music is right now (0 = silent, 1 = a typical loud chorus), not re-levelled
+        /// per band like <see cref="Bands"/>. Quiet intros sit around 0.4-0.5, full beats near 1.
+        /// </summary>
+        public float Loudness;
     }
 
     /// <summary>
@@ -49,6 +55,10 @@ namespace AnikiHelper.Services.Visualizer
         private readonly float[] bandFloors = new float[AudioFrame.BandCount];
         private readonly float[] previousLevels = new float[AudioFrame.BandCount];
         private float latestOnset;
+        private float latestMeanLevel;
+        private float smoothMeanLevel;
+        private float loudReference = 0.48f;
+        private float smoothLoudness;
         private float onsetPeak = 0.05f;
         private float smoothOnset;
         private readonly float[] smoothBands = new float[AudioFrame.BandCount];
@@ -456,6 +466,7 @@ namespace AnikiHelper.Services.Visualizer
             var binHz = (float)sampleRate / FftLength;
             var ratio = Math.Log(MaxFrequency / MinFrequency);
             float flux = 0;
+            float levelSum = 0;
             for (var b = 0; b < AudioFrame.BandCount; b++)
             {
                 var lowHz = MinFrequency * (float)Math.Exp(ratio * b / AudioFrame.BandCount);
@@ -486,6 +497,10 @@ namespace AnikiHelper.Services.Visualizer
                 }
                 // Compress the range so quiet and loud parts both show movement.
                 var level = (float)Math.Max(0, (20 * Math.Log10(magnitude + 1e-7) + 80) / 65);
+                if (b < 100)
+                {
+                    levelSum += level;
+                }
 
                 // Each band tracks its own quiet floor and loud peak, and shows where it sits between
                 // them. Vocals, synths and effects then move as much as drums do, instead of
@@ -513,6 +528,7 @@ namespace AnikiHelper.Services.Visualizer
             lock (sync)
             {
                 latestOnset = onset;
+                latestMeanLevel = levelSum / 100f;
                 Array.Copy(rawBands, latestBands, rawBands.Length);
                 lastDataUtc = DateTime.UtcNow;
             }
@@ -580,6 +596,20 @@ namespace AnikiHelper.Services.Visualizer
 
             beat *= (float)Math.Exp(-6 * deltaSeconds);
             frame.Beat = beat;
+
+            // Loudness: the overall level (output volume already compensated) against a reference
+            // for loud music, which rises if a song is louder still and eases back over minutes.
+            float meanLevel;
+            lock (sync)
+            {
+                meanLevel = silent ? 0f : latestMeanLevel;
+            }
+
+            smoothMeanLevel += (float)((meanLevel - smoothMeanLevel) * (1 - Math.Exp(-2.5 * deltaSeconds)));
+            loudReference = Math.Max(0.48f, Math.Max(smoothMeanLevel, loudReference - (float)(deltaSeconds * 0.1 / 60)));
+            var loudness = Math.Max(0f, Math.Min(1f, 1 - ((loudReference - smoothMeanLevel) / 0.2f)));
+            smoothLoudness += (float)((loudness - smoothLoudness) * (1 - Math.Exp(-(loudness > smoothLoudness ? 6.0 : 2.5) * deltaSeconds)));
+            frame.Loudness = smoothLoudness;
         }
 
         private static float Average(float[] values, int from, int to)
