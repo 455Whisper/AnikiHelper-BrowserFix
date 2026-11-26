@@ -57,7 +57,9 @@ namespace AnikiHelper.Services.Visualizer
         private float latestOnset;
         private float latestMeanLevel;
         private float smoothMeanLevel;
-        private float loudReference = 0.48f;
+        private float loudReference = LoudFloor;
+        private const float LoudFloor = 0.30f;
+        private DateTime lastLoudLogUtc = DateTime.MinValue;
         private float smoothLoudness;
         private float onsetPeak = 0.05f;
         private float smoothOnset;
@@ -597,8 +599,10 @@ namespace AnikiHelper.Services.Visualizer
             beat *= (float)Math.Exp(-6 * deltaSeconds);
             frame.Beat = beat;
 
-            // Loudness: the overall level (output volume already compensated) against a reference
-            // for loud music, which rises if a song is louder still and eases back over minutes.
+            // Loudness: the overall level (output volume already compensated) against the loudest
+            // level heard recently. The reference jumps up to any louder moment and eases back down
+            // about 4 dB a minute, so it fits whatever level the music really arrives at (Spotify's
+            // volume normalization lowers loud songs by ~6 dB).
             float meanLevel;
             lock (sync)
             {
@@ -606,10 +610,15 @@ namespace AnikiHelper.Services.Visualizer
             }
 
             smoothMeanLevel += (float)((meanLevel - smoothMeanLevel) * (1 - Math.Exp(-2.5 * deltaSeconds)));
-            loudReference = Math.Max(0.48f, Math.Max(smoothMeanLevel, loudReference - (float)(deltaSeconds * 0.1 / 60)));
+            loudReference = Math.Max(LoudFloor, Math.Max(smoothMeanLevel, loudReference - (float)(deltaSeconds * 0.06 / 60)));
             var loudness = Math.Max(0f, Math.Min(1f, 1 - ((loudReference - smoothMeanLevel) / 0.2f)));
             smoothLoudness += (float)((loudness - smoothLoudness) * (1 - Math.Exp(-(loudness > smoothLoudness ? 6.0 : 2.5) * deltaSeconds)));
             frame.Loudness = smoothLoudness;
+            if ((DateTime.UtcNow - lastLoudLogUtc).TotalSeconds >= 5 && !silent)
+            {
+                lastLoudLogUtc = DateTime.UtcNow;
+                logger?.Info($"[AnikiHelper][Visualizer] Level {smoothMeanLevel:0.000} ref {loudReference:0.000} loudness {smoothLoudness:0.00} bass {frame.Bass:0.00} mid {frame.Mid:0.00}");
+            }
         }
 
         private static float Average(float[] values, int from, int to)

@@ -173,7 +173,7 @@ namespace AnikiHelper.Services.Visualizer
                 return;
             }
 
-            const double spacing = 0.85;
+            const double spacing = 1.0;
             const double reach = 0.7;
             var random = new Random(11);
             var xs = new List<double>();
@@ -323,7 +323,7 @@ namespace AnikiHelper.Services.Visualizer
             // about a second when it goes quiet); hits nudge the colours round the wheel.
             var music = Math.Min(1.0, (audio.Bass * 0.45) + (audio.Mid * 0.45) + (audio.Onset * 0.35));
             // Scaled by loudness, so a quiet intro gets soft colour and the full beat gets strong colour.
-            music = Math.Pow(music, 1.3) * (0.25 + (0.75 * audio.Loudness * audio.Loudness));
+            music = Math.Pow(music, 1.3) * (0.4 + (0.6 * audio.Loudness));
             colourWash += (music - colourWash) * (1 - Math.Exp(-(music > colourWash ? 6.0 : 0.9) * delta));
             hueBase += delta * (0.015 + (audio.Onset * 0.12));
 
@@ -435,10 +435,10 @@ namespace AnikiHelper.Services.Visualizer
                     // Loudness sets how many peaks fire and how tall: quiet parts need a strong hit
                     // in a site's own sound to raise it (and stay low); loud parts let most fire.
                     var loud = audio.Loudness;
-                    var threshold = 0.7 - (0.5 * loud);
+                    var threshold = 0.6 - (0.4 * loud);
                     var gated = Math.Max(0, level - threshold) / (1 - threshold);
-                    var amp = Math.Pow(gated, 1.4) * 2.3 * (0.5 + (spiralEnergy * 0.8)) * (0.25 + (0.75 * loud * loud)) * siteGain[c];
-                    siteAmp[c] = 2.13 * (1 - Math.Exp(-amp / 2.13));
+                    var amp = Math.Pow(gated, 1.4) * 2.5 * (0.5 + (spiralEnergy * 0.8)) * (0.35 + (0.65 * loud)) * siteGain[c];
+                    siteAmp[c] = 2.6 * (1 - Math.Exp(-amp / 2.6));
                 }
             }
 
