@@ -140,6 +140,7 @@ namespace AnikiHelper.Services.Visualizer
                     closing = false;
                     IsOpen = true;
                     lastTrackUri = null;
+                    BoostPerformance(true);
                     window.Show();
                     window.Activate();
                     AcquireController();
@@ -173,6 +174,7 @@ namespace AnikiHelper.Services.Visualizer
 
                 closing = true;
                 IsOpen = false;
+                BoostPerformance(false);
                 songToast?.HideImmediately();
                 nowPlayingTimer.Stop();
                 clockTimer.Stop();
@@ -586,6 +588,53 @@ namespace AnikiHelper.Services.Visualizer
 
             ShowSongToast(titleText.Text, artistText.Text, songImageUrl, progress, songDurationMs, songPlaying);
             yCardShown = true;
+        }
+
+        [System.Runtime.InteropServices.DllImport("winmm.dll")]
+        private static extern uint timeBeginPeriod(uint period);
+
+        [System.Runtime.InteropServices.DllImport("winmm.dll")]
+        private static extern uint timeEndPeriod(uint period);
+
+        private bool boosted;
+        private System.Diagnostics.ProcessPriorityClass savedPriority;
+        private System.Runtime.GCLatencyMode savedLatency;
+
+        // While the visualizer is open, let Playnite use more of the PC for steadier frames:
+        // higher process priority, 1 ms timer resolution, and garbage collection that avoids
+        // long pauses. Everything is put back when it closes.
+        private void BoostPerformance(bool on)
+        {
+            if (on == boosted)
+            {
+                return;
+            }
+
+            boosted = on;
+            try
+            {
+                var process = System.Diagnostics.Process.GetCurrentProcess();
+                if (on)
+                {
+                    savedPriority = process.PriorityClass;
+                    savedLatency = System.Runtime.GCSettings.LatencyMode;
+                    process.PriorityClass = System.Diagnostics.ProcessPriorityClass.High;
+                    System.Runtime.GCSettings.LatencyMode = System.Runtime.GCLatencyMode.SustainedLowLatency;
+                    timeBeginPeriod(1);
+                }
+                else
+                {
+                    process.PriorityClass = savedPriority;
+                    System.Runtime.GCSettings.LatencyMode = savedLatency;
+                    timeEndPeriod(1);
+                }
+
+                logger?.Info("[AnikiHelper][Visualizer] Performance boost " + (on ? "on" : "off") + ".");
+            }
+            catch (Exception ex)
+            {
+                logger?.Warn(ex, "[AnikiHelper][Visualizer] Performance boost failed.");
+            }
         }
 
         // L3: hide or show the album cover, title and artist so only the visualizer is on screen.

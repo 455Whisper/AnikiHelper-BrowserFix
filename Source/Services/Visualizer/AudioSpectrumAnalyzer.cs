@@ -30,6 +30,9 @@ namespace AnikiHelper.Services.Visualizer
         /// per band like <see cref="Bands"/>. Quiet intros sit around 0.4-0.5, full beats near 1.
         /// </summary>
         public float Loudness;
+
+        /// <summary>Loudness against the loudest level heard recently (used for colour).</summary>
+        public float ColourLoudness;
     }
 
     /// <summary>
@@ -55,9 +58,12 @@ namespace AnikiHelper.Services.Visualizer
         private readonly float[] bandFloors = new float[AudioFrame.BandCount];
         private readonly float[] previousLevels = new float[AudioFrame.BandCount];
         private float latestOnset;
+        [ThreadStatic] private static bool captureThreadBoosted;
         private float latestMeanLevel;
         private float smoothMeanLevel;
         private float loudReference = LoudFloor;
+        private float fixedReference = 0.48f;
+        private float smoothColourLoudness;
         private const float LoudFloor = 0.30f;
         private DateTime lastLoudLogUtc = DateTime.MinValue;
         private float smoothLoudness;
@@ -393,6 +399,13 @@ namespace AnikiHelper.Services.Visualizer
 
         private void OnDataAvailable(object sender, WaveInEventArgs e)
         {
+            // Audio thread first: the sound arrives as quickly as possible.
+            if (!captureThreadBoosted)
+            {
+                captureThreadBoosted = true;
+                try { System.Threading.Thread.CurrentThread.Priority = System.Threading.ThreadPriority.Highest; } catch { }
+            }
+
             var source = sender as WasapiCapture;
             if (source == null || e.BytesRecorded <= 0)
             {
@@ -599,25 +612,32 @@ namespace AnikiHelper.Services.Visualizer
             beat *= (float)Math.Exp(-6 * deltaSeconds);
             frame.Beat = beat;
 
-            // Loudness: the overall level (output volume already compensated) against the loudest
-            // level heard recently. The reference jumps up to any louder moment and eases back down
-            // about 4 dB a minute, so it fits whatever level the music really arrives at (Spotify's
-            // volume normalization lowers loud songs by ~6 dB).
             float meanLevel;
             lock (sync)
             {
                 meanLevel = silent ? 0f : latestMeanLevel;
             }
 
-            smoothMeanLevel += (float)((meanLevel - smoothMeanLevel) * (1 - Math.Exp(-2.5 * deltaSeconds)));
-            loudReference = Math.Max(LoudFloor, Math.Max(smoothMeanLevel, loudReference - (float)(deltaSeconds * 0.06 / 60)));
-            var loudness = Math.Max(0f, Math.Min(1f, 1 - ((loudReference - smoothMeanLevel) / 0.2f)));
-            smoothLoudness += (float)((loudness - smoothLoudness) * (1 - Math.Exp(-(loudness > smoothLoudness ? 6.0 : 2.5) * deltaSeconds)));
+            smoothMeanLevel += (float)((meanLevel - smoothMeanLevel) * (1 - Math.Exp(-6.0 * deltaSeconds)));
+
+            // Loudness (peaks): the overall level (output volume already compensated) against a
+            // fixed reference for loud music.
+            fixedReference = Math.Max(0.48f, Math.Max(smoothMeanLevel, fixedReference - (float)(deltaSeconds * 0.1 / 60)));
+            var loudness = Math.Max(0f, Math.Min(1f, 1 - ((fixedReference - smoothMeanLevel) / 0.2f)));
+            smoothLoudness += (float)((loudness - smoothLoudness) * (1 - Math.Exp(-(loudness > smoothLoudness ? 10.0 : 2.5) * deltaSeconds)));
             frame.Loudness = smoothLoudness;
+
+            // Colour loudness: against the loudest level heard recently instead (jumps up at once,
+            // eases down ~4 dB a minute), so it fits whatever level the music really arrives at
+            // (Spotify's volume normalization lowers loud songs by ~6 dB).
+            loudReference = Math.Max(LoudFloor, Math.Max(smoothMeanLevel, loudReference - (float)(deltaSeconds * 0.06 / 60)));
+            var colourLoudness = Math.Max(0f, Math.Min(1f, 1 - ((loudReference - smoothMeanLevel) / 0.2f)));
+            smoothColourLoudness += (float)((colourLoudness - smoothColourLoudness) * (1 - Math.Exp(-(colourLoudness > smoothColourLoudness ? 10.0 : 2.5) * deltaSeconds)));
+            frame.ColourLoudness = smoothColourLoudness;
             if ((DateTime.UtcNow - lastLoudLogUtc).TotalSeconds >= 5 && !silent)
             {
                 lastLoudLogUtc = DateTime.UtcNow;
-                logger?.Info($"[AnikiHelper][Visualizer] Level {smoothMeanLevel:0.000} ref {loudReference:0.000} loudness {smoothLoudness:0.00} bass {frame.Bass:0.00} mid {frame.Mid:0.00}");
+                logger?.Info($"[AnikiHelper][Visualizer] Level {smoothMeanLevel:0.000} ref {loudReference:0.000} loudness {smoothLoudness:0.00} colour {smoothColourLoudness:0.00} bass {frame.Bass:0.00} mid {frame.Mid:0.00}");
             }
         }
 

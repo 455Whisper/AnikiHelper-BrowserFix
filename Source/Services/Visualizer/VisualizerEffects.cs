@@ -173,7 +173,7 @@ namespace AnikiHelper.Services.Visualizer
                 return;
             }
 
-            const double spacing = 1.0;
+            const double spacing = 0.85;
             const double reach = 0.7;
             var random = new Random(11);
             var xs = new List<double>();
@@ -204,7 +204,8 @@ namespace AnikiHelper.Services.Visualizer
                         : 0.55 + (random.NextDouble() * 0.45);
                     var side = random.NextDouble() < 0.5 ? 1 : -1;
                     spokes.Add((int)(((Spokes / 2.0) + (side * around * Spokes / 2.0) - 0.5 + Spokes) % Spokes));
-                    ages.Add(Math.Max(0, Math.Min(Rings - 1, (int)(rr / Radius * Rings))));
+                    // Outer peaks react slightly later (up to ~0.25 s) for a small outward ripple.
+                    ages.Add(Math.Max(0, Math.Min(22, (int)(rr / Radius * 22))));
                     gains.Add(0.7 + (random.NextDouble() * 0.5));
                 }
             }
@@ -323,8 +324,9 @@ namespace AnikiHelper.Services.Visualizer
             // about a second when it goes quiet); hits nudge the colours round the wheel.
             var music = Math.Min(1.0, (audio.Bass * 0.45) + (audio.Mid * 0.45) + (audio.Onset * 0.35));
             // Scaled by loudness, so a quiet intro gets soft colour and the full beat gets strong colour.
-            music = Math.Pow(music, 1.3) * (0.4 + (0.6 * audio.Loudness));
-            colourWash += (music - colourWash) * (1 - Math.Exp(-(music > colourWash ? 6.0 : 0.9) * delta));
+            var colourLoud = audio.ColourLoudness;
+            music = Math.Pow(music, 1.3) * (0.25 + (0.75 * colourLoud * colourLoud));
+            colourWash += (music - colourWash) * (1 - Math.Exp(-(music > colourWash ? 14.0 : 0.9) * delta));
             hueBase += delta * (0.015 + (audio.Onset * 0.12));
 
             // How far the colour has spread from the centre (0..1): fills over ~3 s once music
@@ -435,10 +437,10 @@ namespace AnikiHelper.Services.Visualizer
                     // Loudness sets how many peaks fire and how tall: quiet parts need a strong hit
                     // in a site's own sound to raise it (and stay low); loud parts let most fire.
                     var loud = audio.Loudness;
-                    var threshold = 0.6 - (0.4 * loud);
+                    var threshold = 0.7 - (0.5 * loud);
                     var gated = Math.Max(0, level - threshold) / (1 - threshold);
-                    var amp = Math.Pow(gated, 1.4) * 2.5 * (0.5 + (spiralEnergy * 0.8)) * (0.35 + (0.65 * loud)) * siteGain[c];
-                    siteAmp[c] = 2.6 * (1 - Math.Exp(-amp / 2.6));
+                    var amp = Math.Pow(gated, 1.4) * 2.3 * (0.5 + (spiralEnergy * 0.8)) * (0.25 + (0.75 * loud * loud)) * siteGain[c];
+                    siteAmp[c] = 2.13 * (1 - Math.Exp(-amp / 2.13));
                 }
             }
 
@@ -459,7 +461,8 @@ namespace AnikiHelper.Services.Visualizer
 
             // Vertices: ring 0 is the centre point (repeated per spoke so indexing stays simple).
             var ringCount = ActiveRings;
-            for (var r = 0; r <= ringCount; r++)
+            // Every ring is independent, so they are worked out across all CPU cores.
+            Parallel.For(0, ringCount + 1, r =>
             {
                 // Each ring drifts outward smoothly between steps.
                 var radial = spiral ? r / (double)ringCount : r == 0 ? 0 : Math.Min(1.0, (r + step) / (ringCount + 1));
@@ -571,7 +574,7 @@ namespace AnikiHelper.Services.Visualizer
 
                     pc[index] = (color.R << 16) | (color.G << 8) | color.B;
                 }
-            }
+            });
 
             Array.Clear(red, 0, red.Length);
             Array.Clear(green, 0, green.Length);
