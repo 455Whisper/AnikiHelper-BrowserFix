@@ -263,6 +263,7 @@ namespace AnikiHelper
         private readonly InGameOverlayService inGameOverlayService;
         private readonly AnikiWebBrowserService webBrowserService;
         private readonly AnikiSpotifyPanelService spotifyPanelService;
+        private readonly Services.Spotify.ScreenSaverNowPlaying screenSaverNowPlaying;
         private readonly AnikiVisualizerService visualizerService;
         private readonly AnikiVideoPlayerService videoPlayerService;
         private Window videoLibraryManagerWindow;
@@ -8765,6 +8766,10 @@ namespace AnikiHelper
                     Settings?.FirstSetup?.IsActive == true ||
                     inGameOverlayService?.IsOverlayOpenOrOpening == true,
                 GetBestScreenSaverSplashImage);
+
+            // Spotify now-playing card in the top-left corner of the AFK screen.
+            screenSaverNowPlaying = new Services.Spotify.ScreenSaverNowPlaying(spotifyPanelService, logger);
+            screenSaverService.ActiveChanged += (isActive, ssWindow) => screenSaverNowPlaying.SetActive(isActive, ssWindow);
 
             horizontalFocusFixService = new NavigationFixService(
                 api,

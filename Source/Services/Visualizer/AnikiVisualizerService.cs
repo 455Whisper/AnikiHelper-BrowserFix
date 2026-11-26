@@ -175,6 +175,7 @@ namespace AnikiHelper.Services.Visualizer
                 closing = true;
                 IsOpen = false;
                 BoostPerformance(false);
+                yCardShown = false;
                 songToast?.HideImmediately();
                 nowPlayingTimer.Stop();
                 clockTimer.Stop();
@@ -571,9 +572,12 @@ namespace AnikiHelper.Services.Visualizer
             {
                 if (songToast == null)
                 {
-                    songToast = new SpotifyNowPlayingToast(spotify.LogoPath, bottomLeft: true);
+                    songToast = new SpotifyNowPlayingToast(spotify.LogoPath, ToastCorner.BottomLeft) { AutoHideSeconds = 5 };
                 }
 
+                // Turned on with Y: stays up until Y turns it off. Otherwise (song change) it
+                // closes by itself after 5 seconds.
+                songToast.Pinned = yCardShown;
                 songToast.OwnerWindow = window;
                 songToast.Show(title, artist, imageUrl, progress, duration, playing);
             }
@@ -596,8 +600,8 @@ namespace AnikiHelper.Services.Visualizer
                 progress = Math.Min(progress, songDurationMs);
             }
 
-            ShowSongToast(titleText.Text, artistText.Text, songImageUrl, progress, songDurationMs, songPlaying);
             yCardShown = true;
+            ShowSongToast(titleText.Text, artistText.Text, songImageUrl, progress, songDurationMs, songPlaying);
         }
 
         [System.Runtime.InteropServices.DllImport("winmm.dll")]
@@ -725,18 +729,19 @@ namespace AnikiHelper.Services.Visualizer
                     // Hold Y (while the song info is hidden): show the now-playing card for as
                     // long as it's held; it fades out when Y is released.
                     var y = (state.ButtonMask & (1 << 3)) != 0;
-                    if (y && !yDown && infoHidden)
+                    // Y toggles the now-playing card: on (stays until Y again) or off.
+                    if (y && !yDown)
                     {
-                        ShowHeldSongCard();
-                    }
-                    else if (y && yCardShown)
-                    {
-                        songToast?.Hold();
-                    }
-                    else if (!y && yDown && yCardShown)
-                    {
-                        yCardShown = false;
-                        songToast?.Hide();
+                        if (songToast != null && songToast.IsVisible)
+                        {
+                            yCardShown = false;
+                            songToast.Pinned = false;
+                            songToast.Hide();
+                        }
+                        else
+                        {
+                            ShowHeldSongCard();
+                        }
                     }
 
                     yDown = y;

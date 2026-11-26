@@ -46,6 +46,9 @@ namespace AnikiHelper.Services.ScreenSaver
 
         public bool IsVisible => window != null && window.IsVisible;
 
+        /// <summary>Raised when the AFK screen opens (with its window) or closes (null).</summary>
+        public event Action<bool, Window> ActiveChanged;
+
         public AnikiScreenSaverService(
             IPlayniteAPI api,
             AnikiHelperSettings settings,
@@ -866,6 +869,15 @@ namespace AnikiHelper.Services.ScreenSaver
             catch (Exception ex)
             {
                 logger?.Warn(ex, "[AnikiHelper][ScreenSaver] Failed to update the ScreenSaver audio state.");
+            }
+
+            try
+            {
+                ActiveChanged?.Invoke(active, active ? window : null);
+            }
+            catch (Exception ex)
+            {
+                logger?.Warn(ex, "[AnikiHelper][ScreenSaver] ActiveChanged handler failed.");
             }
         }
 

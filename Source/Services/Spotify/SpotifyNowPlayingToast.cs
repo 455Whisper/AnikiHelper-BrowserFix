@@ -17,6 +17,13 @@ namespace AnikiHelper.Services.Spotify
     /// The background is the album art, enlarged and heavily blurred, so the card
     /// takes on the colors of each cover. Never takes focus or mouse input.
     /// </summary>
+    internal enum ToastCorner
+    {
+        TopRight,
+        BottomLeft,
+        TopLeft
+    }
+
     internal sealed class SpotifyNowPlayingToast
     {
         private const double CardWidth = 420;
@@ -62,19 +69,29 @@ namespace AnikiHelper.Services.Spotify
         private bool playing;
         private DateTime stampUtc;
 
-        public SpotifyNowPlayingToast(string logoPath, bool bottomLeft = false)
+        public SpotifyNowPlayingToast(string logoPath, ToastCorner corner = ToastCorner.TopRight)
         {
             this.logoPath = logoPath;
-            this.bottomLeft = bottomLeft;
+            this.corner = corner;
         }
 
-        // Bottom-left placement (used over the visualizer); slides in from the left.
-        private readonly bool bottomLeft;
+        // Where the card sits: top right (library), bottom left (visualizer), top left (AFK
+        // screen). Left-side cards slide in from the left.
+        private readonly ToastCorner corner;
+        private bool FromLeft => corner != ToastCorner.TopRight;
+
+        /// <summary>Seconds before the card closes by itself (ignored while <see cref="Pinned"/>).</summary>
+        public double AutoHideSeconds { get; set; } = ShowSeconds;
+
+        /// <summary>When true the card stays up until <see cref="Hide"/> is called.</summary>
+        public bool Pinned { get; set; }
+
+        public bool IsVisible => window != null && window.IsVisible;
 
         /// <summary>Window the card stays above (the visualizer), if any.</summary>
         public Window OwnerWindow { get; set; }
 
-        private double SlideFrom => bottomLeft ? -40 : 40;
+        private double SlideFrom => FromLeft ? -40 : 40;
 
         public void Show(string title, string artist, string imageUrl, double progress, double duration, bool isPlaying)
         {
@@ -83,10 +100,18 @@ namespace AnikiHelper.Services.Spotify
             titleWave.SetText(title ?? string.Empty);
             artistWave.SetText(artist ?? string.Empty);
             brandWave.SetText("Spotify");
-            progressMs = progress;
+
+            // Only re-sync the clock when it has really drifted (a seek or a new song). Re-stamping
+            // on every refresh made the time hop back and forth by a second.
+            var expected = progressMs + (playing ? (DateTime.UtcNow - stampUtc).TotalMilliseconds : 0);
+            if (Math.Abs(expected - progress) > 1500 || Math.Abs(durationMs - duration) > 1 || playing != isPlaying)
+            {
+                progressMs = progress;
+                stampUtc = DateTime.UtcNow;
+            }
+
             durationMs = duration;
             playing = isPlaying;
-            stampUtc = DateTime.UtcNow;
 
             var image = Load(imageUrl, 300);
             art.Source = image;
@@ -119,7 +144,11 @@ namespace AnikiHelper.Services.Spotify
             progressTimer.Start();
             StartWave();
             hideTimer.Stop();
-            hideTimer.Start();
+            if (!Pinned)
+            {
+                hideTimer.Interval = TimeSpan.FromSeconds(Math.Max(1, AutoHideSeconds));
+                hideTimer.Start();
+            }
         }
 
         private void StartWave()
@@ -172,7 +201,7 @@ namespace AnikiHelper.Services.Spotify
                 }
             };
             card.BeginAnimation(UIElement.OpacityProperty, fade);
-            slide.BeginAnimation(TranslateTransform.XProperty, new DoubleAnimation(0, bottomLeft ? -30 : 30, TimeSpan.FromMilliseconds(450))
+            slide.BeginAnimation(TranslateTransform.XProperty, new DoubleAnimation(0, FromLeft ? -30 : 30, TimeSpan.FromMilliseconds(450))
             {
                 EasingFunction = new CubicEase { EasingMode = EasingMode.EaseIn }
             });
@@ -317,10 +346,17 @@ namespace AnikiHelper.Services.Spotify
             {
             }
 
-            if (bottomLeft)
+            if (corner == ToastCorner.BottomLeft)
             {
                 window.Left = left + 24;
                 window.Top = top + height - window.Height - 24;
+                return;
+            }
+
+            if (corner == ToastCorner.TopLeft)
+            {
+                window.Left = left + 24;
+                window.Top = top + 24;
                 return;
             }
 
@@ -424,6 +460,19 @@ namespace AnikiHelper.Services.Spotify
                     return;
                 }
 
+                // Same length (the ticking time): just swap the characters, so the letters keep
+                // their wave position instead of snapping flat for a frame.
+                if (text != null && value.Length == text.Length && panel.Children.Count == value.Length)
+                {
+                    text = value;
+                    for (var i = 0; i < value.Length; i++)
+                    {
+                        ((TextBlock)panel.Children[i]).Text = value[i].ToString();
+                    }
+
+                    return;
+                }
+
                 text = value;
                 panel.Children.Clear();
                 foreach (var ch in value)
@@ -442,10 +491,18 @@ namespace AnikiHelper.Services.Spotify
                         RenderTransform = group
                     });
                 }
+
+                if (lastSeconds > 0)
+                {
+                    Animate(lastSeconds);
+                }
             }
+
+            private double lastSeconds;
 
             public void Animate(double seconds)
             {
+                lastSeconds = seconds;
                 var omega = 2 * Math.PI / PeriodSeconds;
                 for (var i = 0; i < panel.Children.Count; i++)
                 {
