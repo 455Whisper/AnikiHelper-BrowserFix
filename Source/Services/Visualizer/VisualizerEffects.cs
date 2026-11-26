@@ -284,6 +284,7 @@ namespace AnikiHelper.Services.Visualizer
         private double drainSeconds;
         private int seenSongChanges;
         private double hueBase = 0.55;
+        private double colourHit;
 
         private static Color Hsv(double hue, double saturation, double value)
         {
@@ -325,9 +326,13 @@ namespace AnikiHelper.Services.Visualizer
             var music = Math.Min(1.0, (audio.Bass * 0.45) + (audio.Mid * 0.45) + (audio.Onset * 0.35));
             // Scaled by loudness, so a quiet intro gets soft colour and the full beat gets strong colour.
             var colourLoud = audio.ColourLoudness;
-            music = Math.Pow(music, 1.3) * (0.25 + (0.75 * colourLoud * colourLoud));
-            colourWash += (music - colourWash) * (1 - Math.Exp(-(music > colourWash ? 14.0 : 0.9) * delta));
-            hueBase += delta * (0.015 + (audio.Onset * 0.12));
+            music = music * (0.15 + (0.85 * colourLoud * colourLoud));
+            // Falls off quickly between hits so the colour pumps with the music instead of sitting.
+            colourWash += (music - colourWash) * (1 - Math.Exp(-(music > colourWash ? 20.0 : 3.5) * delta));
+            // Kicks and onsets flash the colour brighter and more saturated, and jump the hue round.
+            var hit = Math.Max(audio.Beat, audio.Onset * 0.8) * (0.3 + (0.7 * colourLoud));
+            colourHit = Math.Max(colourHit * Math.Exp(-5.0 * delta), hit);
+            hueBase += delta * (0.02 + (audio.Onset * 0.25) + (audio.Beat * 0.6 * colourLoud));
 
             // How far the colour has spread from the centre (0..1): fills over ~3 s once music
             // plays, recedes in silence, and drains quickly when the song changes so the next
@@ -552,12 +557,12 @@ namespace AnikiHelper.Services.Visualizer
                         // The colour spreads out from the middle as a song starts until it covers
                         // the whole surface; n only varies the hue and strength across it.
                         var reach = SmoothStep(radial - 0.12, radial + 0.04, colourSpread * 1.16);
-                        var mix = colourWash * reach * (0.7 + (0.3 * SmoothStep(-0.6, 0.4, n)));
+                        var mix = Math.Min(1.0, (colourWash + (colourHit * 0.5) + (amplitude * fade * 0.4 * colourWash)) * reach * (0.7 + (0.3 * SmoothStep(-0.6, 0.4, n))));
                         if (mix > 0.01)
                         {
-                            var value = Math.Max(0.4, Math.Max(color.R, Math.Max(color.G, color.B)) / 255.0);
-                            var tint = Hsv(hueBase + (n * 0.45) + (radial * 0.2), 0.8, value);
-                            color = Lerp(color, tint, mix * 0.9);
+                            var value = Math.Min(1.0, Math.Max(0.4, Math.Max(color.R, Math.Max(color.G, color.B)) / 255.0) * (1 + (colourHit * 0.6)));
+                            var tint = Hsv(hueBase + (n * 0.45) + (radial * 0.2), Math.Min(1.0, 0.75 + (colourHit * 0.25)), value);
+                            color = Lerp(color, tint, mix);
                         }
                     }
 

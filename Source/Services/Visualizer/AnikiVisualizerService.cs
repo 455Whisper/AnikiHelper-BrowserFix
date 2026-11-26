@@ -288,7 +288,7 @@ namespace AnikiHelper.Services.Visualizer
                 }
             };
 
-            nowPlayingTimer = new DispatcherTimer(DispatcherPriority.Background) { Interval = TimeSpan.FromSeconds(3) };
+            nowPlayingTimer = new DispatcherTimer(DispatcherPriority.Normal) { Interval = TimeSpan.FromSeconds(2) };
             nowPlayingTimer.Tick += async (s, e) => await RefreshNowPlayingAsync();
             clockTimer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(10) };
             clockTimer.Tick += (s, e) => UpdateClock();
@@ -535,7 +535,12 @@ namespace AnikiHelper.Services.Visualizer
             songDurationMs = (double?)item["duration_ms"] ?? 0;
             songPlaying = (bool?)body["is_playing"] ?? false;
             songFetchedUtc = DateTime.UtcNow;
-            var changed = lastTrackUri != null && !string.IsNullOrEmpty(uri) && uri != lastTrackUri;
+            if (string.IsNullOrEmpty(uri))
+            {
+                uri = titleText.Text + "|" + artistText.Text;
+            }
+
+            var changed = lastTrackUri != null && uri != lastTrackUri;
             if (!string.IsNullOrEmpty(uri))
             {
                 lastTrackUri = uri;
@@ -544,6 +549,11 @@ namespace AnikiHelper.Services.Visualizer
             if (changed)
             {
                 VisualEffect.SongChanges++;
+                logger?.Info("[AnikiHelper][Visualizer] Song changed -> " + titleText.Text);
+                if (yCardShown)
+                {
+                    ShowHeldSongCard();
+                }
             }
 
             // Not while the Spotify panel is open: it already shows the song, and raising the card

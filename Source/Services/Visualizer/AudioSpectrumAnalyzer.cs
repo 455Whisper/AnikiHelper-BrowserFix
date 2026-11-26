@@ -631,8 +631,8 @@ namespace AnikiHelper.Services.Visualizer
             // eases down ~4 dB a minute), so it fits whatever level the music really arrives at
             // (Spotify's volume normalization lowers loud songs by ~6 dB).
             loudReference = Math.Max(LoudFloor, Math.Max(smoothMeanLevel, loudReference - (float)(deltaSeconds * 0.06 / 60)));
-            var colourLoudness = Math.Max(0f, Math.Min(1f, 1 - ((loudReference - smoothMeanLevel) / 0.2f)));
-            smoothColourLoudness += (float)((colourLoudness - smoothColourLoudness) * (1 - Math.Exp(-(colourLoudness > smoothColourLoudness ? 10.0 : 2.5) * deltaSeconds)));
+            var colourLoudness = Math.Max(0f, Math.Min(1f, 1 - ((loudReference - smoothMeanLevel) / 0.12f)));
+            smoothColourLoudness += (float)((colourLoudness - smoothColourLoudness) * (1 - Math.Exp(-(colourLoudness > smoothColourLoudness ? 16.0 : 5.0) * deltaSeconds)));
             frame.ColourLoudness = smoothColourLoudness;
             if ((DateTime.UtcNow - lastLoudLogUtc).TotalSeconds >= 5 && !silent)
             {
