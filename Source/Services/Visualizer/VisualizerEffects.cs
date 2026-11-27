@@ -286,6 +286,39 @@ namespace AnikiHelper.Services.Visualizer
         private double hueBase = 0.55;
         private double colourHit;
 
+        // 65-90 Hz (sub-bass / kick body): drives the colour hardest.
+        private static readonly int SubBandLow = BandFor(65);
+        private static readonly int SubBandHigh = Math.Max(BandFor(65), BandFor(90));
+        // Highs for the outward-travelling patches.
+        private static readonly int HighBandLow = BandFor(2000);
+        private static readonly int HighBandHigh = BandFor(12000);
+        private double subLevel;
+        private double highLevel;
+
+        // Recent history of the low and high colour signals (newest at lowHead/highHead), so
+        // patches can travel: lows from the rim inward, highs from the centre outward.
+        private const int TravelSlots = 96;
+        private const double TravelSeconds = 1.2;
+        private readonly float[] lowTrail = new float[TravelSlots];
+        private readonly float[] highTrail = new float[TravelSlots];
+        private int trailHead;
+        private double trailStep;
+
+        // Adaptive render resolution so the frame fits in one vsync (60 fps).
+        private double renderScale = 1.0;
+        private double frameCostAverage;
+        private readonly System.Diagnostics.Stopwatch frameWatch = new System.Diagnostics.Stopwatch();
+
+        private float TrailAt(float[] trail, double fraction)
+        {
+            var age = Math.Max(0, Math.Min(TravelSlots - 1.001, fraction * (TravelSlots - 1)));
+            var i = (int)age;
+            var t = (float)(age - i);
+            var a = trail[((trailHead - i) % TravelSlots + TravelSlots) % TravelSlots];
+            var b = trail[((trailHead - i - 1) % TravelSlots + TravelSlots) % TravelSlots];
+            return (a * (1 - t)) + (b * t);
+        }
+
         private static Color Hsv(double hue, double saturation, double value)
         {
             hue = (hue - Math.Floor(hue)) * 6;
@@ -318,6 +351,7 @@ namespace AnikiHelper.Services.Visualizer
 
         public override void Render(DrawingContext dc, Size size, AudioFrame audio, double time, double delta)
         {
+            frameWatch.Restart();
             // Spectrum around the circle, mirrored left/right, with a little extra detail.
             var half = Spokes / 2.0;
             var rings = Style == 0;
@@ -327,12 +361,45 @@ namespace AnikiHelper.Services.Visualizer
             // Scaled by loudness, so a quiet intro gets soft colour and the full beat gets strong colour.
             var colourLoud = audio.ColourLoudness;
             music = music * (0.15 + (0.85 * colourLoud * colourLoud));
+
+            // 65-90 Hz on top: the colour reacts to it most (added, nothing else is lowered).
+            var sub = 0.0;
+            for (var b = SubBandLow; b <= SubBandHigh; b++)
+            {
+                sub += audio.Bands[b];
+            }
+
+            sub /= SubBandHigh - SubBandLow + 1;
+            subLevel = sub > subLevel ? sub : subLevel + ((sub - subLevel) * (1 - Math.Exp(-8 * delta)));
+            var high = 0.0;
+            for (var b = HighBandLow; b <= HighBandHigh; b++)
+            {
+                high += audio.Bands[b];
+            }
+
+            high /= HighBandHigh - HighBandLow + 1;
+            highLevel = high > highLevel ? high : highLevel + ((high - highLevel) * (1 - Math.Exp(-8 * delta)));
+            var subLoud = 0.4 + (0.6 * colourLoud);
+            music = Math.Min(1.0, music + (subLevel * subLevel * 0.9 * subLoud));
+
+            // Feed the travelling patches.
+            trailStep += delta / (TravelSeconds / TravelSlots);
+            while (trailStep >= 1)
+            {
+                trailStep -= 1;
+                trailHead = (trailHead + 1) % TravelSlots;
+                lowTrail[trailHead] = 0;
+                highTrail[trailHead] = 0;
+            }
+
+            lowTrail[trailHead] = (float)Math.Max(lowTrail[trailHead], Math.Min(1.0, ((subLevel * 1.2) + (audio.Bass * 0.4)) * subLoud));
+            highTrail[trailHead] = (float)Math.Max(highTrail[trailHead], Math.Min(1.0, ((highLevel * 1.1) + (audio.Onset * 0.3)) * (0.3 + (0.7 * colourLoud))));
             // Falls off quickly between hits so the colour pumps with the music instead of sitting.
             colourWash += (music - colourWash) * (1 - Math.Exp(-(music > colourWash ? 20.0 : 3.5) * delta));
             // Kicks and onsets flash the colour brighter and more saturated, and jump the hue round.
-            var hit = Math.Max(audio.Beat, audio.Onset * 0.8) * (0.3 + (0.7 * colourLoud));
+            var hit = Math.Max(Math.Max(audio.Beat, audio.Onset * 0.8), subLevel * subLevel * 1.2) * (0.3 + (0.7 * colourLoud));
             colourHit = Math.Max(colourHit * Math.Exp(-5.0 * delta), hit);
-            hueBase += delta * (0.02 + (audio.Onset * 0.25) + (audio.Beat * 0.6 * colourLoud));
+            hueBase += delta * (0.02 + (audio.Onset * 0.25) + (audio.Beat * 0.6 * colourLoud) + (subLevel * subLevel * 0.8 * colourLoud));
 
             // How far the colour has spread from the centre (0..1): fills over ~3 s once music
             // plays, recedes in silence, and drains quickly when the song changes so the next
@@ -566,6 +633,29 @@ namespace AnikiHelper.Services.Visualizer
                         }
                     }
 
+                    // Travelling patches: low notes come in from the rim, high notes go out from
+                    // the centre, each in its own colour.
+                    if (colourSpread > 0.001)
+                    {
+                        var reachAll = SmoothStep(radial - 0.12, radial + 0.04, colourSpread * 1.16);
+                        var lowWave = TrailAt(lowTrail, 1 - radial);
+                        var highWave = TrailAt(highTrail, radial);
+                        var nl = (Math.Sin((angle * 3) + (radial * 5) - (time * 0.4)) + Math.Sin((angle * 5) - (radial * 3) + (time * 0.3) + 2.1)) / 2;
+                        var nh = (Math.Sin((angle * 4) - (radial * 7) + (time * 0.5) + 0.9) + Math.Sin((angle * 2) + (radial * 11) - (time * 0.35) + 3.3)) / 2;
+                        var lowMix = lowWave * SmoothStep(-0.35, 0.45, nl) * reachAll;
+                        var highMix = highWave * SmoothStep(-0.35, 0.45, nh) * reachAll;
+                        var v = Math.Max(0.45, Math.Max(color.R, Math.Max(color.G, color.B)) / 255.0);
+                        if (lowMix > 0.01)
+                        {
+                            color = Lerp(color, Hsv(hueBase + 0.5 + (nl * 0.15), 0.85, Math.Min(1.0, v * (1.1 + (colourHit * 0.5)))), Math.Min(1.0, lowMix * 1.1));
+                        }
+
+                        if (highMix > 0.01)
+                        {
+                            color = Lerp(color, Hsv(hueBase + 0.17 + (nh * 0.15), 0.7, Math.Min(1.0, v * 1.15)), Math.Min(1.0, highMix * 0.9));
+                        }
+                    }
+
                     // Spiral: the walls and lips glow a little brighter, so the staircase outline
                     // reads clearly through the colours and peaks.
                     if (edgeGlow > 0.01)
@@ -626,6 +716,23 @@ namespace AnikiHelper.Services.Visualizer
 
             bitmap.WritePixels(new Int32Rect(0, 0, width, height), pixels, width * 4, 0);
             dc.DrawImage(bitmap, new Rect(0, 0, size.Width, size.Height));
+
+            // Keep the frame inside one vsync: if drawing takes too long, render a little smaller
+            // (the picture is scaled up to fill the screen); when there's room, go back up.
+            frameWatch.Stop();
+            var cost = frameWatch.Elapsed.TotalSeconds;
+            frameCostAverage += (cost - frameCostAverage) * 0.1;
+            var budget = FramePeriod * 0.75;
+            if (frameCostAverage > budget && renderScale > 0.55)
+            {
+                renderScale = Math.Max(0.55, renderScale - 0.05);
+                frameCostAverage = budget * 0.85;
+            }
+            else if (frameCostAverage < budget * 0.5 && renderScale < 1.0)
+            {
+                renderScale = Math.Min(1.0, renderScale + 0.05);
+                frameCostAverage = budget * 0.7;
+            }
         }
 
         private void Line(int a, int b, int strength)
@@ -642,7 +749,7 @@ namespace AnikiHelper.Services.Visualizer
         {
             // Spiral renders at full resolution so its fine walls stay crisp.
             var maxWidth = Busy ? (Style == 2 ? 1280 : 900) : (Style == 2 ? 1920 : MaxRenderWidth);
-            var scale = Math.Min(1.0, maxWidth / Math.Max(1.0, size.Width));
+            var scale = Math.Min(1.0, maxWidth * renderScale / Math.Max(1.0, size.Width));
             var w = Math.Max(16, (int)(size.Width * scale));
             var h = Math.Max(16, (int)(size.Height * scale));
             if (bitmap != null && w == width && h == height)
