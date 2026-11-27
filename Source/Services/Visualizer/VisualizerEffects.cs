@@ -304,10 +304,14 @@ namespace AnikiHelper.Services.Visualizer
         private int trailHead;
         private double trailStep;
 
-        // Adaptive render resolution so the frame fits in one vsync (60 fps).
-        private double renderScale = 1.0;
-        private double frameCostAverage;
-        private readonly System.Diagnostics.Stopwatch frameWatch = new System.Diagnostics.Stopwatch();
+        // Wireframe lines queued for drawing, then rasterised across all CPU cores in
+        // horizontal strips (each core owns its own rows, so no locking).
+        private int[] lineA = new int[0];
+        private int[] lineB = new int[0];
+        private int[] lineS = new int[0];
+        private int lineCount;
+        [ThreadStatic] private static int threadMinY;
+        [ThreadStatic] private static int threadMaxY;
 
         private float TrailAt(float[] trail, double fraction)
         {
@@ -351,7 +355,6 @@ namespace AnikiHelper.Services.Visualizer
 
         public override void Render(DrawingContext dc, Size size, AudioFrame audio, double time, double delta)
         {
-            frameWatch.Restart();
             // Spectrum around the circle, mirrored left/right, with a little extra detail.
             var half = Spokes / 2.0;
             var rings = Style == 0;
@@ -697,6 +700,8 @@ namespace AnikiHelper.Services.Visualizer
                 }
             }
 
+            FlushLines();
+
             // A few stars above the horizon.
             for (var i = 0; i < stars.Length; i++)
             {
@@ -717,25 +722,58 @@ namespace AnikiHelper.Services.Visualizer
             bitmap.WritePixels(new Int32Rect(0, 0, width, height), pixels, width * 4, 0);
             dc.DrawImage(bitmap, new Rect(0, 0, size.Width, size.Height));
 
-            // Keep the frame inside one vsync: if drawing takes too long, render a little smaller
-            // (the picture is scaled up to fill the screen); when there's room, go back up.
-            frameWatch.Stop();
-            var cost = frameWatch.Elapsed.TotalSeconds;
-            frameCostAverage += (cost - frameCostAverage) * 0.1;
-            var budget = FramePeriod * 0.75;
-            if (frameCostAverage > budget && renderScale > 0.55)
-            {
-                renderScale = Math.Max(0.55, renderScale - 0.05);
-                frameCostAverage = budget * 0.85;
-            }
-            else if (frameCostAverage < budget * 0.5 && renderScale < 1.0)
-            {
-                renderScale = Math.Min(1.0, renderScale + 0.05);
-                frameCostAverage = budget * 0.7;
-            }
         }
 
         private void Line(int a, int b, int strength)
+        {
+            if (lineCount == lineA.Length)
+            {
+                var size = Math.Max(1024, lineA.Length * 2);
+                Array.Resize(ref lineA, size);
+                Array.Resize(ref lineB, size);
+                Array.Resize(ref lineS, size);
+            }
+
+            lineA[lineCount] = a;
+            lineB[lineCount] = b;
+            lineS[lineCount] = strength;
+            lineCount++;
+        }
+
+        private void FlushLines()
+        {
+            var strips = Math.Max(1, Environment.ProcessorCount * 4);
+            var stripHeight = (height + strips - 1) / strips;
+            Parallel.For(0, strips, strip =>
+            {
+                var minY = strip * stripHeight;
+                var maxY = Math.Min(height, minY + stripHeight);
+                if (minY >= maxY)
+                {
+                    return;
+                }
+
+                threadMinY = minY;
+                threadMaxY = maxY;
+                for (var i = 0; i < lineCount; i++)
+                {
+                    var a = lineA[i];
+                    var b = lineB[i];
+                    var ya = py[a];
+                    var yb = py[b];
+                    if ((ya < minY - 1 && yb < minY - 1) || (ya >= maxY && yb >= maxY))
+                    {
+                        continue;
+                    }
+
+                    DrawQueued(a, b, lineS[i]);
+                }
+            });
+
+            lineCount = 0;
+        }
+
+        private void DrawQueued(int a, int b, int strength)
         {
             var ca = pc[a];
             var cb = pc[b];
@@ -749,7 +787,7 @@ namespace AnikiHelper.Services.Visualizer
         {
             // Spiral renders at full resolution so its fine walls stay crisp.
             var maxWidth = Busy ? (Style == 2 ? 1280 : 900) : (Style == 2 ? 1920 : MaxRenderWidth);
-            var scale = Math.Min(1.0, maxWidth * renderScale / Math.Max(1.0, size.Width));
+            var scale = Math.Min(1.0, maxWidth / Math.Max(1.0, size.Width));
             var w = Math.Max(16, (int)(size.Width * scale));
             var h = Math.Max(16, (int)(size.Height * scale));
             if (bitmap != null && w == width && h == height)
@@ -799,6 +837,15 @@ namespace AnikiHelper.Services.Visualizer
                 var gradient = Math.Abs(dx) < 0.0001f ? 0 : (y1 - y0) / (x1 - x0);
                 var start = Math.Max(0, (int)Math.Ceiling(x0));
                 var end = Math.Min(w - 1, (int)Math.Floor(x1));
+                // Only the part of the line that crosses this core's strip of rows.
+                if (Math.Abs(gradient) > 0.0001f)
+                {
+                    var xa = x0 + ((threadMinY - 2 - y0) / gradient);
+                    var xb = x0 + ((threadMaxY + 1 - y0) / gradient);
+                    start = Math.Max(start, (int)Math.Floor(Math.Min(xa, xb)));
+                    end = Math.Min(end, (int)Math.Ceiling(Math.Max(xa, xb)));
+                }
+
                 var yy = y0 + (gradient * (start - x0));
                 for (var x = start; x <= end; x++, yy += gradient)
                 {
@@ -817,8 +864,8 @@ namespace AnikiHelper.Services.Visualizer
                 }
 
                 var gradient = (x1 - x0) / (y1 - y0);
-                var start = Math.Max(0, (int)Math.Ceiling(y0));
-                var end = Math.Min(h - 1, (int)Math.Floor(y1));
+                var start = Math.Max(threadMinY, (int)Math.Ceiling(y0));
+                var end = Math.Min(threadMaxY - 1, (int)Math.Floor(y1));
                 var xx = x0 + (gradient * (start - y0));
                 for (var y = start; y <= end; y++, xx += gradient)
                 {
@@ -832,7 +879,7 @@ namespace AnikiHelper.Services.Visualizer
 
         private void Plot(int x, int y, float coverage, int cr, int cg, int cb)
         {
-            if (x < 0 || y < 0 || x >= width || y >= height)
+            if (x < 0 || y < threadMinY || x >= width || y >= threadMaxY)
             {
                 return;
             }
