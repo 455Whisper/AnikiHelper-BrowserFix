@@ -191,7 +191,7 @@ namespace AnikiHelper.Services.Spotify
                 return;
             }
 
-            watchTimer = new DispatcherTimer(DispatcherPriority.Background) { Interval = TimeSpan.FromSeconds(3) };
+            watchTimer = new DispatcherTimer(DispatcherPriority.Background) { Interval = TimeSpan.FromSeconds(5) };
             watchTimer.Tick += async (s, e) => await WatchNowPlayingAsync();
             watchTimer.Start();
 
@@ -240,8 +240,7 @@ namespace AnikiHelper.Services.Spotify
             watching = true;
             try
             {
-                var result = await api.SendAsync(HttpMethod.Get, "/me/player/currently-playing?additional_types=episode");
-                var body = result.Body as JObject;
+                var body = await FetchCurrentlyPlayingAsync();
                 var item = body?["item"] as JObject;
                 var uri = (string)item?["uri"];
                 var playingNow = (bool?)body?["is_playing"] ?? false;
@@ -308,6 +307,23 @@ namespace AnikiHelper.Services.Spotify
                 return null;
             }
 
+            // Shared by the library toast, the visualizer and the AFK screen: one request every
+            // few seconds at most, however many of them are asking.
+            if (currentlyPlayingTask != null && (DateTime.UtcNow - currentlyPlayingFetchedUtc).TotalSeconds < 4)
+            {
+                return await currentlyPlayingTask;
+            }
+
+            currentlyPlayingFetchedUtc = DateTime.UtcNow;
+            currentlyPlayingTask = FetchCurrentlyPlayingNowAsync();
+            return await currentlyPlayingTask;
+        }
+
+        private Task<JObject> currentlyPlayingTask;
+        private DateTime currentlyPlayingFetchedUtc;
+
+        private async Task<JObject> FetchCurrentlyPlayingNowAsync()
+        {
             var result = await api.SendAsync(HttpMethod.Get, "/me/player/currently-playing?additional_types=episode");
             return result.Body as JObject;
         }
@@ -1221,7 +1237,7 @@ namespace AnikiHelper.Services.Spotify
                 }
             };
 
-            pollTimer = new DispatcherTimer(DispatcherPriority.Background) { Interval = TimeSpan.FromSeconds(1) };
+            pollTimer = new DispatcherTimer(DispatcherPriority.Background) { Interval = TimeSpan.FromSeconds(2) };
             pollTimer.Tick += async (s, e) => await RefreshPlayerAsync();
             progressTimer = new DispatcherTimer(DispatcherPriority.Render) { Interval = TimeSpan.FromMilliseconds(200) };
             progressTimer.Tick += (s, e) => UpdateProgressBar();

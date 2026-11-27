@@ -289,7 +289,7 @@ namespace AnikiHelper.Services.Visualizer
                 }
             };
 
-            nowPlayingTimer = new DispatcherTimer(DispatcherPriority.Normal) { Interval = TimeSpan.FromSeconds(2) };
+            nowPlayingTimer = new DispatcherTimer(DispatcherPriority.Normal) { Interval = TimeSpan.FromSeconds(5) };
             nowPlayingTimer.Tick += async (s, e) => await RefreshNowPlayingAsync();
             clockTimer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(10) };
             clockTimer.Tick += (s, e) => UpdateClock();

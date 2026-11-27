@@ -52,7 +52,7 @@ namespace AnikiHelper.Services.Spotify
 
             if (pollTimer == null)
             {
-                pollTimer = new DispatcherTimer(DispatcherPriority.Normal) { Interval = TimeSpan.FromSeconds(2) };
+                pollTimer = new DispatcherTimer(DispatcherPriority.Normal) { Interval = TimeSpan.FromSeconds(5) };
                 pollTimer.Tick += async (s, e) => await RefreshAsync();
             }
 

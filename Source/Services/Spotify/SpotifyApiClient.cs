@@ -459,9 +459,24 @@ namespace AnikiHelper.Services.Spotify
 
         // ---------------- API calls ----------------
 
+        // Rate limiting: after a 429, every call waits out Spotify's Retry-After (doubling on
+        // repeats, up to 15 min) instead of hammering the API, which only extends the block.
+        private DateTime blockedUntilUtc = DateTime.MinValue;
+        private double backoffSeconds;
+
+        public bool IsRateLimited
+        {
+            get { return DateTime.UtcNow < blockedUntilUtc; }
+        }
+
         public async Task<SpotifyApiResult> SendAsync(HttpMethod method, string path, JToken body = null)
         {
             var result = new SpotifyApiResult();
+            if (DateTime.UtcNow < blockedUntilUtc)
+            {
+                result.Status = 429;
+                return result;
+            }
             for (var attempt = 0; attempt < 2; attempt++)
             {
                 if (!await EnsureAccessTokenAsync(attempt > 0).ConfigureAwait(true))
@@ -490,6 +505,20 @@ namespace AnikiHelper.Services.Spotify
                             if (result.Status == 401 && attempt == 0)
                             {
                                 continue;
+                            }
+
+                            if (result.Status == 429)
+                            {
+                                var retry = response.Headers.RetryAfter?.Delta?.TotalSeconds ?? 0;
+                                backoffSeconds = Math.Min(900, Math.Max(retry, backoffSeconds > 0 ? backoffSeconds * 2 : 30));
+                                blockedUntilUtc = DateTime.UtcNow.AddSeconds(backoffSeconds);
+                                logger?.Warn("[AnikiHelper][Spotify] Rate limited (" + method + " " + path + "), pausing all requests for " + (int)backoffSeconds + " s (Retry-After " + (int)retry + " s).");
+                                return result;
+                            }
+
+                            if (result.Ok)
+                            {
+                                backoffSeconds = 0;
                             }
 
                             var text = response.Content == null
