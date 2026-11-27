@@ -503,12 +503,12 @@ namespace AnikiHelper.Services.Visualizer
 
             if (spiral)
             {
-                // Each peak site follows its own sound; sites further out hear it a little later,
-                // so hits ripple outward. Soft cap: the loudest reach about 1.25 steps high.
+                // Each peak site follows its own sound, all at the same moment (no outward delay),
+                // so the whole spiral spikes in sync. Soft cap: the loudest reach about 1.25 steps high.
                 EnsurePeakSites();
                 for (var c = 0; c < siteSpoke.Length; c++)
                 {
-                    var level = history[((newest - siteAge[c]) % Rings + Rings) % Rings][siteSpoke[c]];
+                    var level = spokeSpectrum[siteSpoke[c]];
                     // Loudness sets how many peaks fire and how tall: quiet parts need a strong hit
                     // in a site's own sound to raise it (and stay low); loud parts let most fire.
                     var loud = audio.Loudness;
