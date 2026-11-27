@@ -92,6 +92,7 @@ namespace AnikiHelper.Services.Visualizer
         {
             this.logger = logger;
             this.spotify = spotify;
+            spotify.NowPlayingChanged += async () => await RefreshNowPlayingAsync();
             analyzer = new AudioSpectrumAnalyzer(logger);
         }
 

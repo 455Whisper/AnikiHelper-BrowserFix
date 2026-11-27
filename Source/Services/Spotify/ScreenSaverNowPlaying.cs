@@ -24,6 +24,10 @@ namespace AnikiHelper.Services.Spotify
         public ScreenSaverNowPlaying(AnikiSpotifyPanelService spotify, ILogger logger)
         {
             this.spotify = spotify;
+            if (spotify != null)
+            {
+                spotify.NowPlayingChanged += async () => await RefreshAsync();
+            }
             this.logger = logger;
         }
 

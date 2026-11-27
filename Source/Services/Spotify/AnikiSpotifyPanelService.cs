@@ -180,7 +180,23 @@ namespace AnikiHelper.Services.Spotify
             nowPlayingToast = new SpotifyNowPlayingToast(System.IO.Path.Combine(dataDirectory, "logo.png"));
             LogoPath = System.IO.Path.Combine(dataDirectory, "logo.png");
             RunOnUi(StartNowPlayingWatcher);
+
+            // Song changes come from Windows' media controls instantly, so the Web API is only
+            // asked once per change (plus a slow safety check).
+            mediaWatcher = new LocalMediaWatcher(logger);
+            mediaWatcher.Changed += () =>
+            {
+                currentlyPlayingStale = true;
+                RunOnUi(() => NowPlayingChanged?.Invoke());
+            };
+            var ignoredStart = mediaWatcher.StartAsync();
         }
+
+        private readonly LocalMediaWatcher mediaWatcher;
+        private bool currentlyPlayingStale = true;
+
+        /// <summary>Raised on the UI thread the moment Spotify's song or play state changes on this PC.</summary>
+        public event Action NowPlayingChanged;
 
         // ======================= song-change card =======================
 
@@ -194,6 +210,7 @@ namespace AnikiHelper.Services.Spotify
             watchTimer = new DispatcherTimer(DispatcherPriority.Background) { Interval = TimeSpan.FromSeconds(5) };
             watchTimer.Tick += async (s, e) => await WatchNowPlayingAsync();
             watchTimer.Start();
+            NowPlayingChanged += async () => await WatchNowPlayingAsync();
 
             var prewarm = new DispatcherTimer(DispatcherPriority.ApplicationIdle) { Interval = TimeSpan.FromSeconds(6) };
             prewarm.Tick += (s, e) =>
@@ -307,16 +324,40 @@ namespace AnikiHelper.Services.Spotify
                 return null;
             }
 
-            // Shared by the library toast, the visualizer and the AFK screen: one request every
-            // few seconds at most, however many of them are asking.
-            if (currentlyPlayingTask != null && (DateTime.UtcNow - currentlyPlayingFetchedUtc).TotalSeconds < 4)
+            // Shared by the library toast, the visualizer and the AFK screen. With the Spotify app
+            // on this PC, Windows reports changes, so the answer is reused until something changes
+            // (checked anyway once a minute); otherwise (e.g. the phone is playing) every 15 s.
+            var age = (DateTime.UtcNow - currentlyPlayingFetchedUtc).TotalSeconds;
+            var maxAge = mediaWatcher != null && mediaWatcher.HasSpotifySession ? 60 : 15;
+            if (currentlyPlayingTask != null && !currentlyPlayingStale && age < maxAge)
             {
-                return await currentlyPlayingTask;
+                return WithProgress(await currentlyPlayingTask);
             }
 
+            if (currentlyPlayingTask != null && !currentlyPlayingTask.IsCompleted)
+            {
+                return WithProgress(await currentlyPlayingTask);
+            }
+
+            currentlyPlayingStale = false;
             currentlyPlayingFetchedUtc = DateTime.UtcNow;
             currentlyPlayingTask = FetchCurrentlyPlayingNowAsync();
             return await currentlyPlayingTask;
+        }
+
+        /// <summary>A reused answer, with the song position moved on by the time since it was fetched.</summary>
+        private JObject WithProgress(JObject body)
+        {
+            if (body == null || !((bool?)body["is_playing"] ?? false) || body["progress_ms"] == null)
+            {
+                return body;
+            }
+
+            var copy = (JObject)body.DeepClone();
+            var progress = (double)copy["progress_ms"] + (DateTime.UtcNow - currentlyPlayingFetchedUtc).TotalMilliseconds;
+            var duration = (double?)copy["item"]?["duration_ms"];
+            copy["progress_ms"] = duration.HasValue ? Math.Min(progress, duration.Value) : progress;
+            return copy;
         }
 
         private Task<JObject> currentlyPlayingTask;
