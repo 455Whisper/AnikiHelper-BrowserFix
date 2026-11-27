@@ -460,7 +460,7 @@ namespace AnikiHelper.Services.Spotify
         // ---------------- API calls ----------------
 
         // Rate limiting: after a 429, every call waits out Spotify's Retry-After (doubling on
-        // repeats, up to 15 min) instead of hammering the API, which only extends the block.
+        // repeats up to 15 min, never shorter than Spotify asks) instead of hammering the API, which only extends the block.
         private DateTime blockedUntilUtc = DateTime.MinValue;
         private double backoffSeconds;
 
@@ -510,7 +510,7 @@ namespace AnikiHelper.Services.Spotify
                             if (result.Status == 429)
                             {
                                 var retry = response.Headers.RetryAfter?.Delta?.TotalSeconds ?? 0;
-                                backoffSeconds = Math.Min(900, Math.Max(retry, backoffSeconds > 0 ? backoffSeconds * 2 : 30));
+                                backoffSeconds = Math.Max(retry, Math.Min(900, backoffSeconds > 0 ? backoffSeconds * 2 : 30));
                                 blockedUntilUtc = DateTime.UtcNow.AddSeconds(backoffSeconds);
                                 logger?.Warn("[AnikiHelper][Spotify] Rate limited (" + method + " " + path + "), pausing all requests for " + (int)backoffSeconds + " s (Retry-After " + (int)retry + " s).");
                                 return result;
