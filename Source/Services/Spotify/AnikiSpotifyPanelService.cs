@@ -2336,8 +2336,8 @@ namespace AnikiHelper.Services.Spotify
                         continue;
                     }
 
-                    var contextUri = (string)entry["context"]?["uri"];
-                    var contextType = (string)entry["context"]?["type"];
+                    var contextUri = (string)(entry["context"] as JObject)?["uri"];
+                    var contextType = (string)(entry["context"] as JObject)?["type"];
                     var artists = track["artists"] as JArray;
                     var trackUriCopy = uri;
                     var playable = !string.IsNullOrEmpty(contextUri) &&
