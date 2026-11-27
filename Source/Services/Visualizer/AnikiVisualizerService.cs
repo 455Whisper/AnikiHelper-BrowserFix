@@ -359,8 +359,6 @@ namespace AnikiHelper.Services.Visualizer
         }
 
         private TimeSpan lastRenderingTime;
-        private double pendingDelta;
-        private bool skipFrame;
         private readonly List<double> refreshSamples = new List<double>();
 
         private void OnRendering(object sender, EventArgs e)
@@ -402,24 +400,10 @@ namespace AnikiHelper.Services.Visualizer
             delta = Math.Max(0.001, Math.Min(0.1, delta));
             lastFrameSeconds = now;
 
-            // Spotify panel open over the visualizer: both share Playnite's UI thread, so draw
-            // every other frame (at a lower resolution) and give the panel the rest. Motion
-            // keeps the same speed because the skipped time is carried into the next frame.
+            // Spotify panel open over the visualizer: still every frame (line drawing now runs on
+            // all cores, leaving the UI thread room for the panel), just at a lower resolution.
             var shared = spotify.IsOpen;
             VisualEffect.Busy = shared;
-            if (shared)
-            {
-                pendingDelta += delta;
-                skipFrame = !skipFrame;
-                if (skipFrame)
-                {
-                    return;
-                }
-
-                delta = Math.Min(0.1, pendingDelta);
-            }
-
-            pendingDelta = 0;
 
             analyzer.Sample(audio, delta);
             surface.Time = now;
